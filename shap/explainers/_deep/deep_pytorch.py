@@ -105,6 +105,7 @@ class PyTorchDeep(Explainer):
         self.model.zero_grad()
         X = [x.requires_grad_() for x in inputs]
         outputs = self.model(*X)
+        import ipdb; ipdb.set_trace(context=20)
         selected = [val for val in outputs[:, idx]]
         grads = []
         if self.interim:
