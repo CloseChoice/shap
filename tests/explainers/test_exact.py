@@ -5,6 +5,9 @@ import pickle
 import shap
 
 from . import common
+import sklearn
+from shap import datasets
+import pytest
 
 
 def test_interactions():
@@ -53,3 +56,19 @@ def test_serialization_custom_model_save():
         shap.explainers.ExactExplainer, model.predict, data, data,
         model_saver=pickle.dump, model_loader=pickle.load
     )
+
+def test_exact_explainer():
+    X, y = shap.datasets.iris(n_points=100)
+
+    rfc = sklearn.ensemble.RandomForestClassifier(n_estimators=10)
+    rfc.fit(X, y)
+
+
+    explainer = shap.ExactExplainer(rfc.predict, X.iloc[:2])
+    #          sepal length (cm)  sepal width (cm)  petal length (cm)  petal width (cm)
+    # 114                5.8               2.8                5.1               2.4
+
+    #      sepal length (cm)  sepal width (cm)  petal length (cm)  petal width (cm)
+    # 114                5.8               2.8                5.1               2.4
+    # 62                 6.0               2.2                4.0               1.0
+    shap_values = explainer(X.iloc[:1])
