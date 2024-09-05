@@ -253,7 +253,7 @@ class TFDeep(Explainer):
 
                 else:
 
-                    @tf.function
+                    # @tf.function
                     def grad_graph(shap_rAnD):
                         with tf.GradientTape(watch_accessed_variables=False) as tape:
                             tape.watch(shap_rAnD)
@@ -390,6 +390,7 @@ class TFDeep(Explainer):
     def custom_grad(self, op, *grads):
         """Passes a gradient op creation request to the correct handler."""
         type_name = op.type[5:] if op.type.startswith("shap_") else op.type
+        import ipdb; ipdb.set_trace(context=20)
         out = op_handlers[type_name](self, op, *grads)  # we cut off the shap_ prefix before the lookup
         return out
 
