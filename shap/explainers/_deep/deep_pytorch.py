@@ -98,6 +98,7 @@ class PyTorchDeep(Explainer):
         import torch
 
         self.model.zero_grad()
+        inputs[0].requires_grad_()
         X = [x.requires_grad_() for x in inputs]
         outputs = self.model(*X)
         selected = [val for val in outputs[:, idx]]
@@ -117,6 +118,7 @@ class PyTorchDeep(Explainer):
             return grads, [i.detach().cpu().numpy() for i in interim_inputs]
         else:
             for idx, x in enumerate(X):
+                import ipdb; ipdb.set_trace(context=20)
                 grad = torch.autograd.grad(
                     selected, x, retain_graph=True if idx + 1 < len(X) else None, allow_unused=True
                 )[0]
@@ -359,6 +361,7 @@ def linear_1d(module, grad_input, grad_output):
 def nonlinear_1d(module, grad_input, grad_output):
     import torch
 
+    import ipdb; ipdb.set_trace(context=20)
     delta_out = module.y[: int(module.y.shape[0] / 2)] - module.y[int(module.y.shape[0] / 2) :]
 
     delta_in = module.x[: int(module.x.shape[0] / 2)] - module.x[int(module.x.shape[0] / 2) :]
@@ -397,6 +400,7 @@ op_handler["BatchNorm1d"] = linear_1d
 op_handler["BatchNorm2d"] = linear_1d
 op_handler["BatchNorm3d"] = linear_1d
 
+op_handler["LayerNorm"] = nonlinear_1d
 op_handler["LeakyReLU"] = nonlinear_1d
 op_handler["ReLU"] = nonlinear_1d
 op_handler["ELU"] = nonlinear_1d

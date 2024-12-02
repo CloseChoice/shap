@@ -702,6 +702,11 @@ def linearity_with_excluded_handler(input_inds, explainer, op, *grads):
         op.type = op.type[5:]
     return explainer.orig_grads[op.type](op, *grads)
 
+def passthrough_embedding(explainer, op, *grads):
+    import ipdb; ipdb.set_trace(context=20)
+    if op.type.startswith("shap_"):
+        op.type = op.type[5:]
+    return explainer.orig_grads[op.type](op, *grads)
 
 def passthrough(explainer, op, *grads):
     if op.type.startswith("shap_"):
@@ -745,6 +750,7 @@ op_handlers["TensorArrayReadV3"] = passthrough
 op_handlers["TensorArrayWriteV3"] = passthrough
 
 
+op_handlers["Embedding"] = passthrough_embedding
 # ops that don't pass any attributions to their inputs
 op_handlers["Shape"] = break_dependence
 op_handlers["RandomUniform"] = break_dependence
@@ -762,6 +768,7 @@ op_handlers["AvgPool"] = linearity_1d(0)
 op_handlers["FusedBatchNorm"] = linearity_1d(0)
 
 # ops that are nonlinear and only allow a single input to vary
+op_handlers["LayerNorm"] = nonlinearity_1d(0)
 op_handlers["Relu"] = nonlinearity_1d(0)
 op_handlers["Selu"] = nonlinearity_1d(0)
 op_handlers["Elu"] = nonlinearity_1d(0)
