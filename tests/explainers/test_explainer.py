@@ -95,3 +95,10 @@ def test_explainer_xgboost():
     # check the properties of Explanation object
     assert explanation.values.shape == (*X.shape,)
     assert explanation.base_values.shape == (len(X),)
+
+    # check additivity: SHAP values sum to model output
+    np.testing.assert_allclose(
+        explanation.values.sum(1) + explanation.base_values,
+        model.predict(X),
+        atol=1e-5,
+    )
