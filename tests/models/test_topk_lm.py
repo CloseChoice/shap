@@ -381,6 +381,102 @@ def test_topk_lm_save_and_load():
     platform.system() == "Darwin",
     reason="Skipping on MacOS due to torch segmentation error, see GH #4075.",
 )
+def test_topk_lm_get_lm_logits_unsupported_model_type():
+    """Test TopKLM.get_lm_logits raises error for unsupported model type."""
+    pytest.importorskip("torch")
+    transformers = pytest.importorskip("transformers")
+
+    name = "hf-internal-testing/tiny-random-GPTJForCausalLM"
+    tokenizer = transformers.AutoTokenizer.from_pretrained(name)
+    model = transformers.AutoModelForCausalLM.from_pretrained(name)
+
+    topk_lm = shap.models.TopKLM(model, tokenizer, k=3, device="cpu")
+
+    # Manually set model_type to invalid value to trigger error
+    topk_lm.model_type = "invalid"
+
+    X = np.array(["Test input"])
+    with pytest.raises(NotImplementedError, match="Only PyTorch and TensorFlow models are supported"):
+        topk_lm.get_lm_logits(X)
+
+
+@pytest.mark.skipif(
+    platform.system() == "Darwin",
+    reason="Skipping on MacOS due to torch segmentation error, see GH #4075.",
+)
+def test_topk_lm_get_lm_logits_unsupported_model_class():
+    """Test TopKLM.get_lm_logits raises error for non-CausalLM model."""
+    pytest.importorskip("torch")
+    transformers = pytest.importorskip("transformers")
+
+    # Use a non-CausalLM model (e.g., classification model)
+    name = "hf-internal-testing/tiny-random-DistilBertForSequenceClassification"
+    tokenizer = transformers.AutoTokenizer.from_pretrained(name)
+    model = transformers.AutoModelForSequenceClassification.from_pretrained(name)
+
+    topk_lm = shap.models.TopKLM(model, tokenizer, k=3, device="cpu")
+
+    X = np.array(["Test input"])
+    with pytest.raises(NotImplementedError, match="Model type .* not supported"):
+        topk_lm.get_lm_logits(X)
+
+
+@pytest.mark.skipif(
+    platform.system() == "Darwin",
+    reason="Skipping on MacOS due to torch segmentation error, see GH #4075.",
+)
+def test_topk_lm_update_cache_x_no_change():
+    """Test that update_cache_X doesn't regenerate when X is unchanged."""
+    pytest.importorskip("torch")
+    transformers = pytest.importorskip("transformers")
+
+    name = "hf-internal-testing/tiny-random-GPTJForCausalLM"
+    tokenizer = transformers.AutoTokenizer.from_pretrained(name)
+    model = transformers.AutoModelForCausalLM.from_pretrained(name)
+
+    topk_lm = shap.models.TopKLM(model, tokenizer, k=3, device="cpu")
+
+    X = np.array(["Test input"])
+
+    # First update
+    topk_lm.update_cache_X(X)
+    first_topk_ids = topk_lm.topk_token_ids.copy()
+    first_output_names = topk_lm.output_names.copy()
+
+    # Call again with same X - should not regenerate
+    topk_lm.update_cache_X(X)
+
+    assert np.array_equal(topk_lm.topk_token_ids, first_topk_ids)
+    assert topk_lm.output_names == first_output_names
+
+
+@pytest.mark.skipif(
+    platform.system() == "Darwin",
+    reason="Skipping on MacOS due to torch segmentation error, see GH #4075.",
+)
+def test_topk_lm_tokenizer_without_pad_token():
+    """Test TopKLM handles tokenizer without pad_token."""
+    pytest.importorskip("torch")
+    transformers = pytest.importorskip("transformers")
+
+    name = "hf-internal-testing/tiny-random-GPTJForCausalLM"
+    tokenizer = transformers.AutoTokenizer.from_pretrained(name)
+
+    # Ensure pad_token is None to test the initialization path
+    original_pad_token = tokenizer.pad_token
+    tokenizer.pad_token = None
+
+    topk_lm = shap.models.TopKLM(model := transformers.AutoModelForCausalLM.from_pretrained(name),
+                                  tokenizer, k=3, device="cpu")
+
+    # Should have set pad_token to eos_token
+    assert topk_lm.tokenizer.pad_token == topk_lm.tokenizer.eos_token
+
+
+@pytest.mark.skipif(
+    platform.system() == "Darwin",
+    reason="Skipping on MacOS due to torch segmentation error, see GH #4075.",
+)
 def test_topk_lm_load_instantiate_false():
     """Test TopKLM.load with instantiate=False."""
     pytest.importorskip("torch")

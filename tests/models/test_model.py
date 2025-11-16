@@ -84,6 +84,29 @@ def test_model_call_with_torch_tensor():
     np.testing.assert_array_equal(result, np.array([2.0, 4.0, 6.0]))
 
 
+def test_model_call_with_multiple_args():
+    """Test Model.__call__ with multiple arguments."""
+
+    def multi_arg_model(x, y):
+        return x + y
+
+    model = shap.models.Model(multi_arg_model)
+    x = np.array([1, 2, 3])
+    y = np.array([4, 5, 6])
+    result = model(x, y)
+    np.testing.assert_array_equal(result, np.array([5, 7, 9]))
+
+
+def test_model_init_without_output_names():
+    """Test Model initialization when model doesn't have output_names."""
+
+    def simple_model(x):
+        return x * 2
+
+    model = shap.models.Model(simple_model)
+    assert not hasattr(model, "output_names")
+
+
 def test_model_save_and_load():
     """Test Model save and load functionality."""
 

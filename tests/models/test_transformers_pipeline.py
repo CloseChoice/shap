@@ -110,6 +110,84 @@ def test_transformers_pipeline_call_single_string_error():
     platform.system() == "Darwin",
     reason="Skipping on MacOS due to torch segmentation error, see GH #4075.",
 )
+def test_transformers_pipeline_label2id_conversion():
+    """Test that TransformersPipeline correctly converts label2id to int."""
+    transformers = pytest.importorskip("transformers")
+
+    name = "hf-internal-testing/tiny-random-DistilBertForSequenceClassification"
+    pipeline = transformers.pipeline("text-classification", model=name, top_k=None)
+
+    wrapped_pipeline = shap.models.TransformersPipeline(pipeline)
+
+    # Verify all values in label2id are integers
+    for v in wrapped_pipeline.label2id.values():
+        assert isinstance(v, int)
+
+
+@pytest.mark.skipif(
+    platform.system() == "Darwin",
+    reason="Skipping on MacOS due to torch segmentation error, see GH #4075.",
+)
+def test_transformers_pipeline_output_shape():
+    """Test that TransformersPipeline correctly determines output_shape."""
+    transformers = pytest.importorskip("transformers")
+
+    name = "hf-internal-testing/tiny-random-DistilBertForSequenceClassification"
+    pipeline = transformers.pipeline("text-classification", model=name, top_k=None)
+
+    wrapped_pipeline = shap.models.TransformersPipeline(pipeline)
+
+    # Output shape should match the max label id + 1
+    expected_shape = (max(wrapped_pipeline.label2id.values()) + 1,)
+    assert wrapped_pipeline.output_shape == expected_shape
+
+
+@pytest.mark.skipif(
+    platform.system() == "Darwin",
+    reason="Skipping on MacOS due to torch segmentation error, see GH #4075.",
+)
+def test_transformers_pipeline_get_with_unknown_label():
+    """Test that TransformersPipeline handles unknown labels in id2label."""
+    transformers = pytest.importorskip("transformers")
+
+    name = "hf-internal-testing/tiny-random-DistilBertForSequenceClassification"
+    pipeline = transformers.pipeline("text-classification", model=name, top_k=None)
+
+    wrapped_pipeline = shap.models.TransformersPipeline(pipeline)
+
+    # Test that output_names uses .get() with "Unknown" default
+    # This tests line 26: self.id2label.get(i, "Unknown")
+    # If there are gaps in id2label, they should be "Unknown"
+    for i, name in enumerate(wrapped_pipeline.output_names):
+        expected = wrapped_pipeline.id2label.get(i, "Unknown")
+        assert name == expected
+
+
+@pytest.mark.skipif(
+    platform.system() == "Darwin",
+    reason="Skipping on MacOS due to torch segmentation error, see GH #4075.",
+)
+def test_transformers_pipeline_with_single_result():
+    """Test TransformersPipeline handles single result (not a list) from pipeline."""
+    transformers = pytest.importorskip("transformers")
+
+    # Create pipeline without top_k to get single result per input
+    name = "hf-internal-testing/tiny-random-DistilBertForSequenceClassification"
+    pipeline = transformers.pipeline("text-classification", model=name)
+
+    wrapped_pipeline = shap.models.TransformersPipeline(pipeline)
+
+    texts = ["This is a test"]
+    output = wrapped_pipeline(texts)
+
+    assert isinstance(output, np.ndarray)
+    assert output.shape[0] == 1  # One input
+
+
+@pytest.mark.skipif(
+    platform.system() == "Darwin",
+    reason="Skipping on MacOS due to torch segmentation error, see GH #4075.",
+)
 def test_transformers_pipeline_output_names():
     """Test that TransformersPipeline correctly sets output_names."""
     transformers = pytest.importorskip("transformers")
