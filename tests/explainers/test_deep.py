@@ -620,6 +620,76 @@ def test_pytorch_custom_nested_models(torch_device):
     reason="Skipping on MacOS due to torch segmentation error, see GH #4075.",
 )
 @pytest.mark.parametrize("torch_device", TORCH_DEVICES)
+def test_pytorch_embedding(torch_device, random_seed):
+    """Test PyTorch embedding layer with a simple embedding + dense model."""
+    torch = pytest.importorskip("torch")
+    from torch import nn
+
+    # Set random seed
+    torch.manual_seed(random_seed)
+    rs = np.random.RandomState(random_seed)
+
+    # Create simple integer sequence data
+    vocab_size = 20
+    embedding_dim = 8
+    sequence_length = 10
+    num_samples = 100
+
+    # Generate random integer sequences
+    X = rs.randint(0, vocab_size, size=(num_samples, sequence_length))
+    X_tensor = torch.tensor(X, dtype=torch.long)
+
+    # Create a simple model: Embedding -> Flatten -> Dense
+    class EmbeddingModel(nn.Module):
+        """Simple model with embedding layer."""
+
+        def __init__(self):
+            super().__init__()
+            self.embedding = nn.Embedding(vocab_size, embedding_dim)
+            self.flatten = nn.Flatten()
+            self.fc = nn.Linear(sequence_length * embedding_dim, 1)
+            self.sigmoid = nn.Sigmoid()
+
+        def forward(self, x):
+            """Run the model."""
+            x = self.embedding(x)
+            x = self.flatten(x)
+            x = self.fc(x)
+            x = self.sigmoid(x)
+            return x
+
+    model = EmbeddingModel()
+    device = torch.device(torch_device)
+    model.to(device)
+    model.eval()
+
+    # Select background and test samples
+    background = X_tensor[:10].to(device)
+    testx = X_tensor[10:13].to(device)
+
+    # Explain using DeepExplainer
+    e = shap.DeepExplainer(model, background)
+    shap_values = e.shap_values(testx)
+
+    # Verify SHAP values have correct shape
+    # Shape should be (num_test_samples, sequence_length) - embedding dims summed
+    assert shap_values.shape == (3, sequence_length), f"Expected shape (3, {sequence_length}), got {shap_values.shape}"
+
+    # Verify additivity: sum of SHAP values + expected value ≈ model output
+    with torch.no_grad():
+        predictions = model(testx).cpu().numpy()
+
+    sums = shap_values.sum(axis=1, keepdims=True)
+    np.testing.assert_allclose(
+        sums + e.expected_value, predictions, atol=1e-2
+    ), "SHAP values don't satisfy additivity!"
+
+
+@pytest.mark.skipif(
+    platform.system() == "Darwin",
+    reason="Skipping on MacOS due to torch segmentation error, see GH #4075.",
+)
+@pytest.mark.parametrize("torch_device", TORCH_DEVICES)
 def test_pytorch_single_output(torch_device):
     """Testing single outputs"""
     torch = pytest.importorskip("torch")
