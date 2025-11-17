@@ -372,6 +372,50 @@ def nonlinear_1d(module, grad_input, grad_output):
     return tuple(grads)
 
 
+def embedding(module, grad_input, grad_output):
+    """Handler for embedding layers.
+
+    An embedding layer maps integer indices to dense vectors. For SHAP values,
+    we sum the attributions across the embedding dimensions and assign them to
+    the input indices.
+    """
+    import torch
+
+    # Split inputs (indices) and outputs (embeddings) into current and reference
+    xin = module.x[: int(module.x.shape[0] / 2)]
+    rin = module.x[int(module.x.shape[0] / 2) :]
+    xout = module.y[: int(module.y.shape[0] / 2)]
+    rout = module.y[int(module.y.shape[0] / 2) :]
+
+    # Compute differences
+    # Cast indices to float for numerical computation
+    delta_in = xin.float() - rin.float()
+    delta_out = xout - rout
+
+    # Prepare for tiling
+    dup_in = [2] + [1 for _ in delta_in.shape[1:]]
+    dup_out = [2] + [1 for _ in delta_out.shape[1:]]
+
+    # Sum gradients over embedding dimensions (all dims after the index dims)
+    # This reduces the gradient from embedding space back to index space
+    embedding_dims = list(range(len(delta_in.shape), len(grad_output[0].shape)))
+    out_sum = torch.sum(
+        grad_output[0] * delta_out.repeat(dup_out),
+        dim=embedding_dims
+    )
+
+    # Divide by input differences with numerical stability
+    delta_in_tiled = delta_in.repeat(dup_in)
+    grads = [None for _ in grad_input]
+    grads[0] = torch.where(
+        torch.abs(delta_in_tiled) < 1e-6,
+        torch.zeros_like(delta_in_tiled),
+        out_sum / delta_in_tiled
+    )
+
+    return tuple(grads)
+
+
 op_handler = {}
 
 # passthrough ops, where we make no change to the gradient
@@ -398,6 +442,7 @@ op_handler["AdaptiveAvgPool3d"] = linear_1d
 op_handler["BatchNorm1d"] = linear_1d
 op_handler["BatchNorm2d"] = linear_1d
 op_handler["BatchNorm3d"] = linear_1d
+op_handler["Embedding"] = embedding
 
 op_handler["LeakyReLU"] = nonlinear_1d
 op_handler["ReLU"] = nonlinear_1d
