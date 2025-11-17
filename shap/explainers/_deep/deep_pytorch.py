@@ -283,7 +283,7 @@ def add_interim_values(module, input, output):
                     assert input[i] == output[i], "Only the 0th input may vary!"
             # if a new method is added, it must be added here too. This ensures tensors
             # are only saved if necessary
-            if func_name in ["maxpool", "nonlinear_1d"]:
+            if func_name in ["maxpool", "nonlinear_1d", "embedding"]:
                 # only save tensors if necessary
                 if type(input) is tuple:
                     module.x = torch.nn.Parameter(input[0].detach())
