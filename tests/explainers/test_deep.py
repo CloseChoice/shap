@@ -194,6 +194,57 @@ def test_tf_keras_linear():
     np.testing.assert_allclose(shap_values.sum(-1), expected, atol=1e-5)
 
 
+def test_tf_keras_embedding(random_seed):
+    """Test embedding layer with a simple embedding + dense model."""
+    tf = pytest.importorskip("tensorflow")
+    rs = np.random.RandomState(random_seed)
+    tf.compat.v1.random.set_random_seed(random_seed)
+
+    # Skip for newer TensorFlow versions that have issues
+    if version.parse(tf.__version__) >= version.parse("2.5.0"):
+        pytest.skip()
+
+    tf.compat.v1.disable_eager_execution()
+
+    # Create simple integer sequence data
+    vocab_size = 20
+    embedding_dim = 8
+    sequence_length = 10
+    num_samples = 100
+
+    # Generate random integer sequences
+    X = rs.randint(0, vocab_size, size=(num_samples, sequence_length))
+
+    # Create a simple model: Embedding -> Flatten -> Dense
+    model = tf.keras.models.Sequential()
+    model.add(tf.keras.layers.Embedding(vocab_size, embedding_dim, input_length=sequence_length))
+    model.add(tf.keras.layers.Flatten())
+    model.add(tf.keras.layers.Dense(1, activation="sigmoid"))
+    model.compile(loss="binary_crossentropy", optimizer="adam")
+
+    # Select background and test samples
+    background = X[:10]
+    testx = X[10:13]
+
+    # Explain using DeepExplainer
+    sess = tf.compat.v1.keras.backend.get_session()
+    sess.run(tf.compat.v1.global_variables_initializer())
+
+    e = shap.DeepExplainer((model.layers[0].input, model.layers[-1].output), background)
+    shap_values = e.shap_values(testx)
+
+    # Verify SHAP values have correct shape
+    assert shap_values[0].shape == (3, sequence_length), f"Expected shape (3, 10), got {shap_values[0].shape}"
+
+    # Verify additivity: sum of SHAP values + expected value ≈ model output
+    sums = np.array([shap_values[i].sum(axis=1) for i in range(len(shap_values))])
+    predictions = sess.run(model.layers[-1].output, feed_dict={model.layers[0].input: testx})
+    expected_value = sess.run(model.layers[-1].output, feed_dict={model.layers[0].input: background}).mean(0)
+    diff = predictions - expected_value
+
+    np.testing.assert_allclose(sums[0], diff.flatten(), atol=1e-2), "SHAP values don't satisfy additivity!"
+
+
 def test_tf_keras_imdb_lstm(random_seed):
     """Basic LSTM example using the keras API defined in tensorflow"""
     tf = pytest.importorskip("tensorflow")
