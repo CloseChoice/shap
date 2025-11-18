@@ -453,7 +453,12 @@ class TFDeep(Explainer):
 
                 # assign the attributions to the right part of the output arrays
                 for t in range(len(X)):
-                    phis[t][j] = (sample_phis[t][bg_data[t].shape[0] :] * (X[t][j] - bg_data[t])).mean(0)
+                    # Handle None gradients (e.g., from embedding layers with integer inputs)
+                    if sample_phis[t] is None:
+                        # If gradients are None, SHAP values should be zero (no contribution)
+                        phis[t][j] = np.zeros_like(X[t][j], dtype=np.float32)
+                    else:
+                        phis[t][j] = (sample_phis[t][bg_data[t].shape[0] :] * (X[t][j] - bg_data[t])).mean(0)
 
             output_phis.append(phis[0] if not self.multi_input else phis)
 
