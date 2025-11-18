@@ -194,6 +194,62 @@ def test_tf_keras_linear():
     np.testing.assert_allclose(shap_values.sum(-1), expected, atol=1e-5)
 
 
+def test_tf_keras_embedding(random_seed):
+    """Test embedding layer with a simple embedding + dense model.
+
+    Note: Skipped for TF >= 2.5.0 due to Keras 3 incompatibility with session-based execution.
+    The TensorFlow DeepExplainer requires TF 1.x-style graph execution which is incompatible
+    with Keras 3's KerasTensor objects.
+    """
+    tf = pytest.importorskip("tensorflow")
+    rs = np.random.RandomState(random_seed)
+    tf.compat.v1.random.set_random_seed(random_seed)
+
+    # Skip for TF >= 2.5 (Keras 3) - fundamental architecture incompatibility
+    if version.parse(tf.__version__) >= version.parse("2.5.0"):
+        pytest.skip("TensorFlow DeepExplainer requires TF < 2.5.0 (Keras 3 incompatible with session execution)")
+
+    tf.compat.v1.disable_eager_execution()
+
+    # Create simple integer sequence data
+    vocab_size = 20
+    embedding_dim = 8
+    sequence_length = 10
+    num_samples = 100
+
+    # Generate random integer sequences
+    X = rs.randint(0, vocab_size, size=(num_samples, sequence_length))
+
+    # Create a simple model: Embedding -> Flatten -> Dense
+    model = tf.keras.models.Sequential()
+    model.add(tf.keras.layers.Embedding(vocab_size, embedding_dim, input_length=sequence_length))
+    model.add(tf.keras.layers.Flatten())
+    model.add(tf.keras.layers.Dense(1, activation="sigmoid"))
+    model.compile(loss="binary_crossentropy", optimizer="adam")
+
+    # Select background and test samples
+    background = X[:10]
+    testx = X[10:13]
+
+    # Explain using DeepExplainer
+    sess = tf.compat.v1.keras.backend.get_session()
+    sess.run(tf.compat.v1.global_variables_initializer())
+
+    e = shap.DeepExplainer((model.layers[0].input, model.layers[-1].output), background)
+    shap_values = e.shap_values(testx)
+
+    # Verify SHAP values have correct shape
+    assert shap_values[0].shape == (3, sequence_length), f"Expected shape (3, 10), got {shap_values[0].shape}"
+
+    # Verify additivity: sum of SHAP values + expected value ≈ model output
+    sums = np.array([shap_values[i].sum(axis=1) for i in range(len(shap_values))])
+    predictions = sess.run(model.layers[-1].output, feed_dict={model.layers[0].input: testx})
+    expected_value = sess.run(model.layers[-1].output, feed_dict={model.layers[0].input: background}).mean(0)
+    diff = predictions - expected_value
+
+    np.testing.assert_allclose(sums[0], diff.flatten(), atol=1e-2), "SHAP values don't satisfy additivity!"
+
+
 def test_tf_keras_imdb_lstm(random_seed):
     """Basic LSTM example using the keras API defined in tensorflow"""
     tf = pytest.importorskip("tensorflow")
@@ -562,6 +618,220 @@ def test_pytorch_custom_nested_models(torch_device):
         np.testing.assert_allclose(sums + e.expected_value, diff, atol=1e-3),
         "Sum of SHAP values does not match difference!",
     )
+
+
+@pytest.mark.skipif(
+    platform.system() == "Darwin",
+    reason="Skipping on MacOS due to torch segmentation error, see GH #4075.",
+)
+@pytest.mark.parametrize("torch_device", TORCH_DEVICES)
+def test_pytorch_embedding(torch_device, random_seed):
+    """Test PyTorch embedding layer with a simple embedding + dense model."""
+    torch = pytest.importorskip("torch")
+    from torch import nn
+
+    # Set random seed
+    torch.manual_seed(random_seed)
+    rs = np.random.RandomState(random_seed)
+
+    # Create simple integer sequence data
+    vocab_size = 20
+    embedding_dim = 8
+    sequence_length = 10
+    num_samples = 100
+
+    # Generate random integer sequences
+    X = rs.randint(0, vocab_size, size=(num_samples, sequence_length))
+    X_tensor = torch.tensor(X, dtype=torch.long)
+
+    # Create a simple model: Embedding -> Flatten -> Dense
+    class EmbeddingModel(nn.Module):
+        """Simple model with embedding layer."""
+
+        def __init__(self):
+            super().__init__()
+            self.embedding = nn.Embedding(vocab_size, embedding_dim)
+            self.flatten = nn.Flatten()
+            self.fc = nn.Linear(sequence_length * embedding_dim, 1)
+            self.sigmoid = nn.Sigmoid()
+
+        def forward(self, x):
+            """Run the model."""
+            x = self.embedding(x)
+            x = self.flatten(x)
+            x = self.fc(x)
+            x = self.sigmoid(x)
+            return x
+
+    model = EmbeddingModel()
+    device = torch.device(torch_device)
+    model.to(device)
+    model.eval()
+
+    # Select background and test samples
+    background = X_tensor[:10].to(device)
+    testx = X_tensor[10:13].to(device)
+
+    # Explain using DeepExplainer
+    e = shap.DeepExplainer(model, background)
+    shap_values = e.shap_values(testx)
+
+    # Verify SHAP values have correct shape
+    # Shape should be (num_test_samples, sequence_length, num_outputs)
+    # For single output models, num_outputs=1
+    assert shap_values.shape == (3, sequence_length, 1), f"Expected shape (3, {sequence_length}, 1), got {shap_values.shape}"
+
+    # Verify additivity: sum of SHAP values + expected value ≈ model output
+    with torch.no_grad():
+        predictions = model(testx).cpu().numpy()
+
+    sums = shap_values.sum(axis=1)  # Sum over sequence_length
+    np.testing.assert_allclose(
+        sums + e.expected_value, predictions, atol=1e-2
+    ), "SHAP values don't satisfy additivity!"
+
+
+def test_embedding_cross_framework(random_seed):
+    """Test that TensorFlow and PyTorch embedding layers produce identical SHAP values.
+
+    This test creates models with identical weights in both frameworks and verifies
+    that the SHAP values match, validating that both implementations follow the same
+    logic for handling embedding layers.
+
+    Note: Skipped for TF >= 2.5.0 due to Keras 3 incompatibility with session-based execution.
+    """
+    tf = pytest.importorskip("tensorflow")
+    torch = pytest.importorskip("torch")
+    from torch import nn
+
+    # Skip for TF >= 2.5 (Keras 3) - fundamental architecture incompatibility
+    if version.parse(tf.__version__) >= version.parse("2.5.0"):
+        pytest.skip("TensorFlow DeepExplainer requires TF < 2.5.0 (Keras 3 incompatible with session execution)")
+
+    tf.compat.v1.disable_eager_execution()
+
+    # Set random seeds
+    rs = np.random.RandomState(random_seed)
+    torch.manual_seed(random_seed)
+    tf.compat.v1.random.set_random_seed(random_seed)
+
+    # Model parameters
+    vocab_size = 10
+    embedding_dim = 4
+    sequence_length = 5
+
+    # Create shared weights
+    # Embedding matrix: vocab_size x embedding_dim
+    embedding_weights = rs.randn(vocab_size, embedding_dim).astype(np.float32)
+
+    # Linear layer: embedding_dim -> 1
+    linear_weights = rs.randn(embedding_dim, 1).astype(np.float32)
+    linear_bias = rs.randn(1).astype(np.float32)
+
+    # Create input data
+    num_samples = 20
+    X = rs.randint(0, vocab_size, size=(num_samples, sequence_length))
+
+    # === TensorFlow Model ===
+    tf_model = tf.keras.models.Sequential()
+
+    # Add embedding layer with preset weights
+    tf_embedding = tf.keras.layers.Embedding(
+        vocab_size,
+        embedding_dim,
+        input_length=sequence_length,
+        embeddings_initializer=tf.keras.initializers.Constant(embedding_weights)
+    )
+    tf_model.add(tf_embedding)
+
+    # Flatten to prepare for dense layer
+    tf_model.add(tf.keras.layers.Flatten())
+
+    # Add dense layer with preset weights (no activation for simplicity)
+    tf_dense = tf.keras.layers.Dense(
+        1,
+        kernel_initializer=tf.keras.initializers.Constant(
+            # Need to tile the weights to match flattened input size
+            np.tile(linear_weights.T, sequence_length)
+        ),
+        bias_initializer=tf.keras.initializers.Constant(linear_bias),
+        activation=None
+    )
+    tf_model.add(tf_dense)
+    tf_model.compile(loss="mse", optimizer="adam")
+
+    # === PyTorch Model ===
+    class PyTorchEmbeddingModel(nn.Module):
+        """PyTorch model with same architecture."""
+
+        def __init__(self, embedding_weights, linear_weights, linear_bias):
+            super().__init__()
+            self.embedding = nn.Embedding(vocab_size, embedding_dim)
+            # Set embedding weights
+            self.embedding.weight.data = torch.tensor(embedding_weights)
+
+            self.flatten = nn.Flatten()
+
+            # Linear layer that operates on flattened embeddings
+            self.fc = nn.Linear(sequence_length * embedding_dim, 1)
+            # Set linear weights - tile to match flattened input
+            tiled_weights = np.tile(linear_weights, (sequence_length, 1))
+            self.fc.weight.data = torch.tensor(tiled_weights.T)
+            self.fc.bias.data = torch.tensor(linear_bias)
+
+        def forward(self, x):
+            x = self.embedding(x)
+            x = self.flatten(x)
+            x = self.fc(x)
+            return x
+
+    pytorch_model = PyTorchEmbeddingModel(embedding_weights, linear_weights, linear_bias)
+    pytorch_model.eval()
+
+    # Split data
+    background = X[:5]
+    testx = X[5:8]
+
+    # === TensorFlow SHAP values ===
+    sess = tf.compat.v1.keras.backend.get_session()
+    sess.run(tf.compat.v1.global_variables_initializer())
+
+    tf_explainer = shap.DeepExplainer(
+        (tf_model.layers[0].input, tf_model.layers[-1].output),
+        background
+    )
+    tf_shap_values = tf_explainer.shap_values(testx)
+
+    # === PyTorch SHAP values ===
+    background_tensor = torch.tensor(background, dtype=torch.long)
+    testx_tensor = torch.tensor(testx, dtype=torch.long)
+
+    pytorch_explainer = shap.DeepExplainer(pytorch_model, background_tensor)
+    pytorch_shap_values = pytorch_explainer.shap_values(testx_tensor)
+
+    # === Verify SHAP values match ===
+    # TensorFlow returns list of arrays (one per output), PyTorch returns single array
+    tf_values = tf_shap_values[0] if isinstance(tf_shap_values, list) else tf_shap_values
+
+    print(f"\nTensorFlow SHAP values shape: {tf_values.shape}")
+    print(f"PyTorch SHAP values shape: {pytorch_shap_values.shape}")
+    print(f"\nTensorFlow SHAP values:\n{tf_values}")
+    print(f"\nPyTorch SHAP values:\n{pytorch_shap_values}")
+
+    # Both should have shape (3, sequence_length)
+    assert tf_values.shape == (3, sequence_length), f"TF shape mismatch: {tf_values.shape}"
+    assert pytorch_shap_values.shape == (3, sequence_length), f"PyTorch shape mismatch: {pytorch_shap_values.shape}"
+
+    # SHAP values should be very close (allowing for small numerical differences)
+    np.testing.assert_allclose(
+        tf_values,
+        pytorch_shap_values,
+        rtol=1e-4,
+        atol=1e-4,
+        err_msg="TensorFlow and PyTorch SHAP values don't match!"
+    )
+
+    print("\n✓ Cross-framework validation passed! TF and PyTorch produce identical SHAP values.")
 
 
 @pytest.mark.skipif(
