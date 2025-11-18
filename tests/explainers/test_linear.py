@@ -262,3 +262,116 @@ def test_interventional_multi_regression():
     explainer = shap.explainers.LinearExplainer(model, maskers.Independent(X))
     shap_values = explainer.shap_values(X)
     assert np.allclose(shap_values.sum(1) + explainer.expected_value, outputs, atol=1e-6)
+
+
+def test_linear_explainer_feature_dependence_error():
+    """Test that feature_dependence parameter raises an error."""
+    beta = np.array([1, 2, 3])
+    mu = np.zeros(3)
+    Sigma = np.eye(3)
+
+    with pytest.raises(ValueError, match="feature_dependence has been renamed to feature_perturbation"):
+        shap.explainers.LinearExplainer((beta, 0), (mu, Sigma), feature_dependence="interventional")
+
+
+def test_linear_explainer_with_dataframe():
+    """Test LinearExplainer with pandas DataFrame input."""
+    pytest.importorskip("pandas")
+    import pandas as pd
+
+    # Create synthetic data
+    np.random.seed(42)
+    X = pd.DataFrame(np.random.randn(50, 4), columns=["a", "b", "c", "d"])
+    y = 2 * X["a"] + X["b"] - 0.5 * X["c"] + np.random.randn(50) * 0.1
+
+    # Train a simple linear model
+    Ridge = pytest.importorskip("sklearn.linear_model").Ridge
+    model = Ridge(alpha=0.1)
+    model.fit(X, y)
+
+    # Test with DataFrame background
+    explainer = shap.explainers.LinearExplainer(model, X)
+    shap_values = explainer.shap_values(X)
+
+    # Check shape
+    assert shap_values.shape == X.shape
+
+    # Check additivity
+    predictions = model.predict(X)
+    reconstructed = shap_values.sum(1) + explainer.expected_value
+    assert np.allclose(reconstructed, predictions, atol=1e-6)
+
+
+def test_linear_explainer_call_method():
+    """Test the __call__ method returns Explanation object."""
+    beta = np.array([2, 1, 0.5])
+    mu = np.zeros(3)
+    X = np.random.randn(10, 3)
+
+    explainer = shap.explainers.LinearExplainer((beta, 0), (mu, np.eye(3)))
+    explanation = explainer(X)
+
+    # Check that we get an Explanation object
+    assert hasattr(explanation, "values")
+    assert hasattr(explanation, "base_values")
+    assert explanation.values.shape == X.shape
+
+    # Check additivity
+    model_output = X @ beta
+    reconstructed = explanation.values.sum(1) + explanation.base_values
+    assert np.allclose(reconstructed, model_output, atol=1e-6)
+
+
+def test_linear_explainer_with_intercept():
+    """Test LinearExplainer with non-zero intercept."""
+    beta = np.array([1, 2, 3])
+    intercept = 5.0
+    X = np.random.randn(20, 3)
+
+    explainer = shap.explainers.LinearExplainer((beta, intercept), (np.zeros(3), np.eye(3)))
+    shap_values = explainer.shap_values(X)
+
+    # Model predictions
+    predictions = X @ beta + intercept
+
+    # Check additivity
+    reconstructed = shap_values.sum(1) + explainer.expected_value
+    assert np.allclose(reconstructed, predictions, atol=1e-6)
+
+
+def test_linear_explainer_simple_model_tuple():
+    """Test LinearExplainer with (coef, intercept) tuple."""
+    beta = np.array([3, -1, 2])
+    intercept = 1.5
+    X = np.random.randn(15, 3)
+
+    masker = shap.maskers.Independent({"mean": np.zeros(3), "cov": np.eye(3)})
+    explainer = shap.explainers.LinearExplainer((beta, intercept), masker)
+
+    # Get SHAP values
+    shap_values = explainer.shap_values(X)
+
+    # Check shape
+    assert shap_values.shape == X.shape
+
+    # Check that SHAP values match expected for independent features
+    # For independent features with identity link: shap = coef * (x - mean)
+    expected_shap = X * beta  # since mean is 0
+    assert np.allclose(shap_values, expected_shap, atol=1e-10)
+
+
+def test_linear_explainer_with_nsamples():
+    """Test LinearExplainer with custom nsamples for correlation_dependent."""
+    beta = np.array([1, 1, 1])
+    mu = np.zeros(3)
+    Sigma = np.array([[1, 0.5, 0], [0.5, 1, 0.5], [0, 0.5, 1]])
+    X = np.ones((5, 3))
+
+    # Test with custom nsamples
+    masker = shap.maskers.Impute({"mean": mu, "cov": Sigma})
+    explainer = shap.explainers.LinearExplainer((beta, 0), masker, nsamples=500)
+
+    shap_values = explainer.shap_values(X)
+
+    # Should complete without error
+    assert shap_values.shape == X.shape
