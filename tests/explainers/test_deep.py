@@ -248,6 +248,61 @@ def test_tf_keras_imdb_lstm(random_seed):
     platform.system() == "Darwin" and os.getenv("GITHUB_ACTIONS") == "true",
     reason="Skipping on GH MacOS runners due to memory error, see GH #3929",
 )
+def test_tf_eager_stacked_lstms(random_seed):
+    """Test stacked LSTMs in eager mode with DeepExplainer."""
+    tf = pytest.importorskip("tensorflow")
+    rs = np.random.RandomState(random_seed)
+    tf.compat.v1.random.set_random_seed(random_seed)
+
+    # Skip for older TF versions that don't work well with eager mode
+    if version.parse(tf.__version__) < version.parse("2.0.0"):
+        pytest.skip("Test requires TensorFlow 2.0+")
+
+    # Skip embeddings as requested - use direct numeric input instead
+    # Create synthetic sequence data (batch_size, sequence_length, features)
+    sequence_length = 20
+    num_features = 10
+    batch_size = 50
+
+    # Generate random sequence data
+    X_train = rs.randn(batch_size, sequence_length, num_features).astype('float32')
+    X_test = rs.randn(10, sequence_length, num_features).astype('float32')
+
+    # Create a model with stacked LSTMs (no embedding layer)
+    model = tf.keras.models.Sequential()
+    model.add(tf.keras.layers.LSTM(16, return_sequences=True, input_shape=(sequence_length, num_features)))
+    model.add(tf.keras.layers.LSTM(8))
+    model.add(tf.keras.layers.Dense(1, activation='sigmoid'))
+    model.compile(loss='binary_crossentropy', optimizer='adam', metrics=['accuracy'])
+
+    # Select background samples
+    inds = rs.choice(X_train.shape[0], 3, replace=False)
+    background = X_train[inds]
+    testx = X_test[0:1]
+
+    # Create explainer and get SHAP values
+    # Use the model's input and output directly for eager mode
+    e = shap.DeepExplainer(model, background)
+    shap_values = e.shap_values(testx)
+
+    # Check if SHAP values sum correctly to the difference
+    predicted = model(testx).numpy()
+    expected_baseline = model(background).numpy().mean(0)
+
+    sums = np.array([shap_values[i].sum() for i in range(len(shap_values))])
+    diff = predicted[0, :] - expected_baseline
+
+    print(f"\nDiagnostics for stacked LSTM test:")
+    print(f"Predicted output: {predicted[0, :]}")
+    print(f"Expected baseline: {expected_baseline}")
+    print(f"Difference (pred - baseline): {diff}")
+    print(f"Sum of SHAP values: {sums}")
+    print(f"Divergence: {np.abs(sums - diff)}")
+
+    # This assertion will likely fail initially, showing the divergence
+    np.testing.assert_allclose(sums, diff, atol=1e-02, rtol=1e-02), "Sum of SHAP values does not match difference!"
+
+
 def test_tf_deep_imbdb_transformers():
     # GH 3522
     pytest.importorskip("torch")

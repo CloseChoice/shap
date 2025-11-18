@@ -744,11 +744,28 @@ op_handlers["TensorArrayScatterV3"] = passthrough
 op_handlers["TensorArrayReadV3"] = passthrough
 op_handlers["TensorArrayWriteV3"] = passthrough
 
+# TensorList operations used by LSTM and other RNN layers
+op_handlers["TensorListStack"] = passthrough
+op_handlers["TensorListPushBack"] = passthrough
+op_handlers["TensorListGetItem"] = passthrough
+op_handlers["TensorListSetItem"] = passthrough
+op_handlers["TensorListFromTensor"] = passthrough
+op_handlers["TensorListPopBack"] = passthrough
+op_handlers["TensorListGather"] = passthrough
+op_handlers["TensorListScatter"] = passthrough
+op_handlers["EmptyTensorList"] = passthrough
+
+# Control flow operations used by RNN layers
+op_handlers["While"] = passthrough
+op_handlers["StatelessWhile"] = passthrough
+
 
 # ops that don't pass any attributions to their inputs
 op_handlers["Shape"] = break_dependence
 op_handlers["RandomUniform"] = break_dependence
 op_handlers["ZerosLike"] = break_dependence
+op_handlers["TensorListReserve"] = break_dependence
+op_handlers["TensorListLength"] = break_dependence
 # op_handlers["StopGradient"] = break_dependence # this allows us to stop attributions when we want to (like softmax re-centering)
 
 # ops that are linear and only allow a single input to vary
