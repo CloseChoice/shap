@@ -386,10 +386,27 @@ def test_tf_eager_lstm():
     assert np.abs(e.expected_value[0] + sv[0].sum(-1) - model(x_input)[:, 0]).max() < 1e-4
 
 
-def test_tf_eager_stacked_lstms():
+def test_tf_eager_stacked_lstms(random_seed):
     # this test should pass with tf 2.x
+    import random
+
     tf = pytest.importorskip("tensorflow")
-    # Define the start and end datetime
+
+    # Clear any existing TensorFlow session/graph state
+    tf.keras.backend.clear_session()
+
+    # Set ALL random seeds to ensure reproducibility
+    # TensorFlow uses multiple random sources that all need to be seeded
+    random.seed(random_seed)  # Python random module
+    np.random.seed(random_seed)  # Legacy numpy global RNG (used by TF/Keras)
+    tf.random.set_seed(random_seed)  # TensorFlow random ops
+
+    # Try to set Keras random seed (available in TF 2.7+)
+    if hasattr(tf.keras.utils, "set_random_seed"):
+        tf.keras.utils.set_random_seed(random_seed)
+
+    # Use modern numpy generator for our data generation
+    rng = np.random.default_rng(random_seed)
     start_datetime = pd.to_datetime("2020-01-01 00:00:00")
     end_datetime = pd.to_datetime("2023-03-31 23:00:00")
     # Generate a DatetimeIndex with hourly frequency
@@ -397,8 +414,8 @@ def test_tf_eager_stacked_lstms():
     # Create a DataFrame with random data for 7 features
     num_samples = len(date_rng)
     num_features = 7
-    # Generate random data for the DataFrame
-    data = np.random.rand(num_samples, num_features)
+    # Generate random data for the DataFrame using the generator
+    data = rng.random((num_samples, num_features))
     # Create the DataFrame with a DatetimeIndex
     df = pd.DataFrame(data, index=date_rng, columns=[f"X{i}" for i in range(1, num_features + 1)])
 
@@ -461,19 +478,26 @@ def test_tf_eager_stacked_lstms():
         return x, y
 
     xarr, yarr = tensor_to_arrays(input_obj=train_dataset)
-    # Create an explainer object
+    # Create an explainer object using first 100 samples as background
     e = shap.DeepExplainer(model, xarr[:100, :, :])
-    # Calculate SHAP values for the data
-    sv = e.shap_values(xarr[:100, :, :], check_additivity=False)
-    model_output_values = model(xarr[:100, :, :])
+    # Calculate SHAP values for DIFFERENT samples (100-200) to avoid self-explanation
+    sv = e.shap_values(xarr[100:200, :, :], check_additivity=False)
+    model_output_values = model(xarr[100:200, :, :])
     # Check that SHAP values sum to the difference between prediction and baseline
     # Using a relaxed tolerance of 0.05 to account for numerical precision and randomness
-    for dim in range(3):
-        assert (
-            model_output_values[:, dim].numpy()
-            - e.expected_value[dim].numpy()
-            - sv[dim].sum(axis=tuple(range(1, sv[dim].ndim)))
-        ).max() < 0.05
+    try:
+        for dim in range(3):
+            diff = (
+                model_output_values[:, dim].numpy()
+                - e.expected_value[dim].numpy()
+                - sv[dim].sum(axis=tuple(range(1, sv[dim].ndim)))
+            )
+            max_diff = diff.max()
+            assert max_diff < 0.05, f"Dimension {dim}: max diff = {max_diff:.6f} (threshold: 0.05)"
+    except AssertionError as err:
+        print(f"\n❌ FALSIFYING EXAMPLE FOUND! Seed: {random_seed}")
+        print(f"Error details: {err}")
+        raise
 
 
 #######################
