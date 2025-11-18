@@ -195,14 +195,19 @@ def test_tf_keras_linear():
 
 
 def test_tf_keras_embedding(random_seed):
-    """Test embedding layer with a simple embedding + dense model."""
+    """Test embedding layer with a simple embedding + dense model.
+
+    Note: Skipped for TF >= 2.5.0 due to Keras 3 incompatibility with session-based execution.
+    The TensorFlow DeepExplainer requires TF 1.x-style graph execution which is incompatible
+    with Keras 3's KerasTensor objects.
+    """
     tf = pytest.importorskip("tensorflow")
     rs = np.random.RandomState(random_seed)
     tf.compat.v1.random.set_random_seed(random_seed)
 
-    # Skip for newer TensorFlow versions that have issues
+    # Skip for TF >= 2.5 (Keras 3) - fundamental architecture incompatibility
     if version.parse(tf.__version__) >= version.parse("2.5.0"):
-        pytest.skip()
+        pytest.skip("TensorFlow DeepExplainer requires TF < 2.5.0 (Keras 3 incompatible with session execution)")
 
     tf.compat.v1.disable_eager_execution()
 
@@ -693,19 +698,15 @@ def test_embedding_cross_framework(random_seed):
     that the SHAP values match, validating that both implementations follow the same
     logic for handling embedding layers.
 
-    Note: This test is skipped for TensorFlow >= 2.5.0 because DeepExplainer requires
-    tf.compat.v1.keras.backend.get_session(), which was removed in newer TensorFlow
-    versions. The TensorFlow DeepExplainer only works in graph mode (TF 1.x style).
-    See: https://github.com/shap/shap/issues/3046
+    Note: Skipped for TF >= 2.5.0 due to Keras 3 incompatibility with session-based execution.
     """
     tf = pytest.importorskip("tensorflow")
     torch = pytest.importorskip("torch")
     from torch import nn
 
-    # Skip for newer TensorFlow versions - DeepExplainer requires TF 1.x APIs
-    # that were removed in TF 2.5+
+    # Skip for TF >= 2.5 (Keras 3) - fundamental architecture incompatibility
     if version.parse(tf.__version__) >= version.parse("2.5.0"):
-        pytest.skip("TensorFlow DeepExplainer requires TF < 2.5.0 (needs get_session API)")
+        pytest.skip("TensorFlow DeepExplainer requires TF < 2.5.0 (Keras 3 incompatible with session execution)")
 
     tf.compat.v1.disable_eager_execution()
 
