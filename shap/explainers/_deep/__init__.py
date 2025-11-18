@@ -45,9 +45,13 @@ class DeepExplainer(Explainer):
             If the input is a tuple, the returned shap values will be for the input of the
             layer argument. layer must be a layer in the model, i.e. model.conv2
 
+            if framework == 'jax', a callable function that takes JAX arrays as input and returns
+            predictions.
+
         data :
             if framework == 'tensorflow': [np.array] or [pandas.DataFrame]
             if framework == 'pytorch': [torch.tensor]
+            if framework == 'jax': [jax.Array] or [np.array]
 
             The background dataset to use for integrating out features. Deep integrates
             over these samples. The data passed here must match the input tensors given in the
@@ -69,24 +73,40 @@ class DeepExplainer(Explainer):
 
         """
         # first, we need to find the framework
-        if type(model) is tuple:
-            a, b = model
-            try:
-                a.named_parameters()
-                framework = "pytorch"
-            except Exception:
-                framework = "tensorflow"
-        else:
-            try:
-                model.named_parameters()
-                framework = "pytorch"
-            except Exception:
-                framework = "tensorflow"
+        framework = None
+
+        # Check for JAX first by looking at the data type
+        try:
+            import jax.numpy as jnp
+
+            if isinstance(data, list):
+                if len(data) > 0 and isinstance(data[0], jnp.ndarray):
+                    framework = "jax"
+            elif isinstance(data, jnp.ndarray):
+                framework = "jax"
+        except ImportError:
+            pass
+
+        # If not JAX, check for PyTorch or TensorFlow
+        if framework is None:
+            if type(model) is tuple:
+                a, b = model
+                try:
+                    a.named_parameters()
+                    framework = "pytorch"
+                except Exception:
+                    framework = "tensorflow"
+            else:
+                try:
+                    model.named_parameters()
+                    framework = "pytorch"
+                except Exception:
+                    framework = "tensorflow"
 
         masker = data
         super().__init__(model, masker)
 
-        self.explainer: TFDeep | PyTorchDeep
+        self.explainer: TFDeep | PyTorchDeep | JAXDeep
         if framework == "tensorflow":
             from .deep_tf import TFDeep
 
@@ -95,6 +115,10 @@ class DeepExplainer(Explainer):
             from .deep_pytorch import PyTorchDeep
 
             self.explainer = PyTorchDeep(model, data)
+        elif framework == "jax":
+            from .deep_jax import JAXDeep
+
+            self.explainer = JAXDeep(model, data)
 
         self.expected_value = self.explainer.expected_value
         self.explainer.framework = framework  # type: ignore

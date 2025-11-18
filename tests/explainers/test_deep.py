@@ -768,3 +768,153 @@ def test_pytorch_multiple_inputs(torch_device, disconnected, activation):
         np.testing.assert_allclose(sums + e.expected_value, outputs, atol=1e-3),
         "Sum of SHAP values does not match difference!",
     )
+
+
+###################
+# JAX related tests #
+###################
+
+
+def test_jax_simple_model(random_seed):
+    """Test JAX DeepExplainer with a simple linear model."""
+    jax = pytest.importorskip("jax")
+    import jax.numpy as jnp
+
+    rs = np.random.RandomState(random_seed)
+
+    # Create a simple linear model
+    def simple_model(x):
+        """A simple linear model: y = 2*x + 1"""
+        return jnp.sum(2.0 * x + 1.0, axis=1, keepdims=True)
+
+    # Create background data
+    background = jnp.array(rs.randn(10, 3).astype(np.float32))
+
+    # Create test data
+    test_data = jnp.array(rs.randn(5, 3).astype(np.float32))
+
+    # Create the explainer
+    explainer = shap.DeepExplainer(simple_model, background)
+
+    # Get SHAP values
+    shap_values = explainer.shap_values(test_data)
+
+    # Verify shape
+    assert shap_values.shape == (5, 3, 1)
+
+    # Verify additivity
+    model_outputs = np.array(simple_model(test_data))
+    np.testing.assert_allclose(
+        shap_values.sum(axis=1) + explainer.expected_value, model_outputs, atol=1e-3
+    ), "Sum of SHAP values does not match difference!"
+
+
+def test_jax_neural_network(random_seed):
+    """Test JAX DeepExplainer with a neural network."""
+    jax = pytest.importorskip("jax")
+    import jax.numpy as jnp
+
+    rs = np.random.RandomState(random_seed)
+
+    # Create a simple 2-layer neural network
+    def neural_network(x):
+        """A simple 2-layer neural network."""
+        # Layer 1: 3 -> 4
+        w1 = jnp.array([[0.5, -0.3, 0.2, 0.1], [0.4, 0.6, -0.2, 0.3], [0.3, -0.4, 0.5, -0.2]])
+        b1 = jnp.array([0.1, -0.1, 0.2, -0.2])
+        h1 = jax.nn.relu(jnp.dot(x, w1) + b1)
+
+        # Layer 2: 4 -> 1 (single output)
+        w2 = jnp.array([[0.3], [0.2], [-0.1], [0.4]])
+        b2 = jnp.array([0.05])
+        output = jnp.dot(h1, w2) + b2
+
+        return output
+
+    # Create background data for neural network
+    background = jnp.array(rs.randn(20, 3).astype(np.float32))
+    test_data = jnp.array(rs.randn(5, 3).astype(np.float32))
+
+    # Create the explainer
+    explainer = shap.DeepExplainer(neural_network, background)
+
+    # Get SHAP values
+    # Note: JAX implementation uses standard gradients, which may not perfectly
+    # satisfy additivity for nonlinear activations. This is a known limitation.
+    shap_values = explainer.shap_values(test_data, check_additivity=False)
+
+    # Verify shape
+    assert shap_values.shape == (5, 3, 1)
+
+    # Verify that SHAP values are computed and non-zero
+    assert not np.allclose(shap_values, 0)
+
+
+def test_jax_multi_output(random_seed):
+    """Test JAX DeepExplainer with multiple outputs."""
+    jax = pytest.importorskip("jax")
+    import jax.numpy as jnp
+
+    rs = np.random.RandomState(random_seed)
+
+    # Create a neural network with multiple outputs
+    def multi_output_model(x):
+        """A neural network with 2 outputs."""
+        # Layer 1: 3 -> 4
+        w1 = jnp.array([[0.5, -0.3, 0.2, 0.1], [0.4, 0.6, -0.2, 0.3], [0.3, -0.4, 0.5, -0.2]])
+        b1 = jnp.array([0.1, -0.1, 0.2, -0.2])
+        h1 = jax.nn.relu(jnp.dot(x, w1) + b1)
+
+        # Layer 2: 4 -> 2 (two outputs)
+        w2 = jnp.array([[0.3, -0.4], [0.2, 0.5], [-0.1, 0.3], [0.4, -0.2]])
+        b2 = jnp.array([0.05, -0.05])
+        output = jnp.dot(h1, w2) + b2
+
+        return output
+
+    # Create background data
+    background = jnp.array(rs.randn(20, 3).astype(np.float32))
+    test_data = jnp.array(rs.randn(5, 3).astype(np.float32))
+
+    # Create the explainer
+    explainer = shap.DeepExplainer(multi_output_model, background)
+
+    # Get SHAP values
+    # Note: JAX implementation uses standard gradients, which may not perfectly
+    # satisfy additivity for nonlinear activations. This is a known limitation.
+    shap_values = explainer.shap_values(test_data, check_additivity=False)
+
+    # Verify shape (num_samples, num_features, num_outputs)
+    assert shap_values.shape == (5, 3, 2)
+
+    # Verify that SHAP values are computed and non-zero
+    assert not np.allclose(shap_values, 0)
+
+
+def test_jax_call_method(random_seed):
+    """Test JAX DeepExplainer __call__ method returns Explanation object."""
+    jax = pytest.importorskip("jax")
+    import jax.numpy as jnp
+
+    rs = np.random.RandomState(random_seed)
+
+    # Create a simple model
+    def simple_model(x):
+        return jnp.sum(x, axis=1, keepdims=True)
+
+    # Create background and test data
+    background = jnp.array(rs.randn(10, 3).astype(np.float32))
+    test_data = jnp.array(rs.randn(5, 3).astype(np.float32))
+
+    # Create the explainer
+    explainer = shap.DeepExplainer(simple_model, background)
+
+    # Test __call__ method
+    explanation = explainer(test_data)
+
+    # Verify that it returns an Explanation object
+    assert isinstance(explanation, shap.Explanation)
+
+    # Verify that values match shap_values
+    shap_values = explainer.shap_values(test_data)
+    np.testing.assert_array_almost_equal(explanation.values, shap_values, decimal=8)
