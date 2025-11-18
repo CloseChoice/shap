@@ -98,7 +98,16 @@ class PyTorchDeep(Explainer):
         import torch
 
         self.model.zero_grad()
-        X = [x.requires_grad_() for x in inputs]
+        # Handle integer tensors (e.g., embedding indices) - they cannot require gradients
+        # The embedding handler will compute attributions via the backward hook instead
+        X = []
+        for x in inputs:
+            if x.dtype in [torch.int32, torch.int64, torch.long]:
+                # Keep as integer - embedding layers require integer indices
+                # Gradients will be computed via the embedding backward hook
+                X.append(x)
+            else:
+                X.append(x.requires_grad_())
         outputs = self.model(*X)
         selected = [val for val in outputs[:, idx]]
         grads = []
@@ -117,13 +126,18 @@ class PyTorchDeep(Explainer):
             return grads, [i.detach().cpu().numpy() for i in interim_inputs]
         else:
             for idx, x in enumerate(X):
-                grad = torch.autograd.grad(
-                    selected, x, retain_graph=True if idx + 1 < len(X) else None, allow_unused=True
-                )[0]
-                if grad is not None:
-                    grad = grad.cpu().numpy()
-                else:
+                # For tensors without requires_grad (e.g., integer indices for embeddings),
+                # return zeros as the embedding backward hook handles the actual gradients
+                if not x.requires_grad:
                     grad = torch.zeros_like(x).cpu().numpy()
+                else:
+                    grad = torch.autograd.grad(
+                        selected, x, retain_graph=True if idx + 1 < len(X) else None, allow_unused=True
+                    )[0]
+                    if grad is not None:
+                        grad = grad.cpu().numpy()
+                    else:
+                        grad = torch.zeros_like(x).cpu().numpy()
                 grads.append(grad)
             return grads
 
@@ -286,9 +300,18 @@ def add_interim_values(module, input, output):
             if func_name in ["maxpool", "nonlinear_1d", "embedding"]:
                 # only save tensors if necessary
                 if type(input) is tuple:
-                    module.x = torch.nn.Parameter(input[0].detach())
+                    input_tensor = input[0].detach()
                 else:
-                    module.x = torch.nn.Parameter(input.detach())
+                    input_tensor = input.detach()
+
+                # For embedding layers, inputs are integer indices
+                # We store them directly as they don't need to be Parameters
+                if func_name == "embedding":
+                    module.x = input_tensor  # Keep as regular tensor (integer type)
+                else:
+                    module.x = torch.nn.Parameter(input_tensor)
+
+                # Outputs are always float, so can be Parameters
                 if type(output) is tuple:
                     module.y = torch.nn.Parameter(output[0].detach())
                 else:

@@ -691,14 +691,20 @@ def test_embedding_cross_framework(random_seed):
     This test creates models with identical weights in both frameworks and verifies
     that the SHAP values match, validating that both implementations follow the same
     logic for handling embedding layers.
+
+    Note: This test is skipped for TensorFlow >= 2.5.0 because DeepExplainer requires
+    tf.compat.v1.keras.backend.get_session(), which was removed in newer TensorFlow
+    versions. The TensorFlow DeepExplainer only works in graph mode (TF 1.x style).
+    See: https://github.com/shap/shap/issues/3046
     """
     tf = pytest.importorskip("tensorflow")
     torch = pytest.importorskip("torch")
     from torch import nn
 
-    # Skip for newer TensorFlow versions
+    # Skip for newer TensorFlow versions - DeepExplainer requires TF 1.x APIs
+    # that were removed in TF 2.5+
     if version.parse(tf.__version__) >= version.parse("2.5.0"):
-        pytest.skip()
+        pytest.skip("TensorFlow DeepExplainer requires TF < 2.5.0 (needs get_session API)")
 
     tf.compat.v1.disable_eager_execution()
 
