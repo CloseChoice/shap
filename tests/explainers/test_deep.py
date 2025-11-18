@@ -672,14 +672,15 @@ def test_pytorch_embedding(torch_device, random_seed):
     shap_values = e.shap_values(testx)
 
     # Verify SHAP values have correct shape
-    # Shape should be (num_test_samples, sequence_length) - embedding dims summed
-    assert shap_values.shape == (3, sequence_length), f"Expected shape (3, {sequence_length}), got {shap_values.shape}"
+    # Shape should be (num_test_samples, sequence_length, num_outputs)
+    # For single output models, num_outputs=1
+    assert shap_values.shape == (3, sequence_length, 1), f"Expected shape (3, {sequence_length}, 1), got {shap_values.shape}"
 
     # Verify additivity: sum of SHAP values + expected value ≈ model output
     with torch.no_grad():
         predictions = model(testx).cpu().numpy()
 
-    sums = shap_values.sum(axis=1, keepdims=True)
+    sums = shap_values.sum(axis=1)  # Sum over sequence_length
     np.testing.assert_allclose(
         sums + e.expected_value, predictions, atol=1e-2
     ), "SHAP values don't satisfy additivity!"
