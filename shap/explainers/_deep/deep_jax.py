@@ -67,11 +67,11 @@ class JAXDeep(Explainer):
         # convert to JAX arrays if needed
         self.data = [jnp.array(d) if not isinstance(d, jnp.ndarray) else d for d in data]
 
-        self.expected_value = None
-        self.interim_inputs_shape = None
+        self.expected_value: np.ndarray | None = None
+        self.interim_inputs_shape: list[tuple[int, ...]] | None = None
 
         # If interim layer, compute the shape of intermediate activations
-        if self.interim:
+        if self.interim and self.layer_fn is not None:
             with jax.default_device(jax.devices("cpu")[0] if jax.devices("cpu") else jax.devices()[0]):
                 interim_outputs = self.layer_fn(*self.data)
                 if not isinstance(interim_outputs, (list, tuple)):
@@ -90,9 +90,8 @@ class JAXDeep(Explainer):
             self.num_outputs = model_outputs.shape[1]
 
         # compute expected value as mean over background data
-        self.expected_value = jnp.mean(model_outputs, axis=0)
-        if isinstance(self.expected_value, jnp.ndarray):
-            self.expected_value = np.array(self.expected_value)
+        expected_val_jax = jnp.mean(model_outputs, axis=0)
+        self.expected_value = np.array(expected_val_jax)
 
         # Ensure expected_value is always an array for consistency with other frameworks
         if np.isscalar(self.expected_value) or self.expected_value.ndim == 0:
@@ -179,7 +178,7 @@ class JAXDeep(Explainer):
         jax = self.jax
         jnp = self.jnp
 
-        if self.interim:
+        if self.interim and self.layer_fn is not None:
             # For interim layers, we need to compute gradients with respect to
             # the intermediate layer activations
             def model_output_idx(*args):
@@ -328,7 +327,7 @@ class JAXDeep(Explainer):
         output_phis = []
         for i in range(model_output_ranks.shape[1]):
             phis = []
-            if self.interim:
+            if self.interim and self.interim_inputs_shape is not None:
                 for k in range(len(self.interim_inputs_shape)):
                     phis.append(np.zeros((X[0].shape[0],) + self.interim_inputs_shape[k][1:]))
             else:
@@ -351,7 +350,7 @@ class JAXDeep(Explainer):
                 sample_phis = self.gradient(feature_ind, joint_x)
 
                 # assign the attributions to the right part of the output arrays
-                if self.interim:
+                if self.interim and self.interim_inputs_shape is not None:
                     sample_phis, output = sample_phis
                     x, data = [], []
                     for k in range(len(output)):
@@ -385,7 +384,7 @@ class JAXDeep(Explainer):
                 ]
             # multiple outputs case
             else:
-                output_phis = np.stack(output_phis, axis=-1)
+                output_phis = np.stack(output_phis, axis=-1)  # type: ignore[assignment]
 
         if ranked_outputs is not None:
             return output_phis, model_output_ranks
