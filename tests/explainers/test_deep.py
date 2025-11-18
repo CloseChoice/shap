@@ -918,3 +918,180 @@ def test_jax_call_method(random_seed):
     # Verify that values match shap_values
     shap_values = explainer.shap_values(test_data)
     np.testing.assert_array_almost_equal(explanation.values, shap_values, decimal=8)
+
+
+def test_jax_linear_model(random_seed):
+    """Test JAX DeepExplainer with a linear model (should satisfy additivity perfectly)."""
+    jax = pytest.importorskip("jax")
+    import jax.numpy as jnp
+
+    rs = np.random.RandomState(random_seed)
+
+    # coefficients relating y with x1 and x2
+    coef = jnp.array([1.0, 2.0])
+    bias = jnp.array([0.5])
+
+    # generate data following a linear relationship
+    x = rs.normal(1, 10, size=(100, len(coef))).astype(np.float32)
+    x_jax = jnp.array(x)
+
+    # create a linear model
+    def linear_model(x):
+        result = jnp.dot(x, coef) + bias
+        # Ensure result is 2D (batch_size, 1)
+        return result.reshape(-1, 1)
+
+    # Use subset as background
+    background = x_jax[:10]
+    test_data = x_jax[10:15]
+
+    # explain
+    explainer = shap.DeepExplainer(linear_model, background)
+    shap_values = explainer.shap_values(test_data)
+
+    # Verify shape
+    assert shap_values.shape == (5, 2, 1)
+
+    # For linear models, verify that the explanation follows the equation
+    # SHAP values should be (input - background_mean) * coefficient
+    expected = (np.array(test_data) - np.array(background).mean(0))[:, :, np.newaxis] * np.array(coef).reshape(
+        1, -1, 1
+    )
+    np.testing.assert_allclose(shap_values, expected, atol=1e-5)
+
+    # Verify additivity
+    model_outputs = np.array(linear_model(test_data))
+    np.testing.assert_allclose(
+        shap_values.sum(axis=1) + explainer.expected_value, model_outputs, atol=1e-5
+    ), "Sum of SHAP values does not match difference!"
+
+
+def test_jax_vs_tensorflow_linear_sigmoid(random_seed):
+    """Compare JAX and TensorFlow DeepExplainer on linear + sigmoid model."""
+    jax = pytest.importorskip("jax")
+    tf = pytest.importorskip("tensorflow")
+    import jax.numpy as jnp
+
+    rs = np.random.RandomState(random_seed)
+
+    # Create same data for both
+    x = rs.normal(0, 1, size=(20, 3)).astype(np.float32)
+    test_x = rs.normal(0, 1, size=(5, 3)).astype(np.float32)
+
+    # Define weights and bias (same for both)
+    weights = rs.randn(3, 1).astype(np.float32)
+    bias = rs.randn(1).astype(np.float32)
+
+    # JAX model
+    weights_jax = jnp.array(weights)
+    bias_jax = jnp.array(bias)
+
+    def jax_model(x):
+        return jax.nn.sigmoid(jnp.dot(x, weights_jax) + bias_jax)
+
+    # TensorFlow model
+    inputs_tf = tf.keras.layers.Input(shape=(3,))
+    # Use a dense layer with fixed weights
+    outputs_tf = tf.keras.layers.Dense(1, activation="sigmoid", use_bias=True)(inputs_tf)
+    model_tf = tf.keras.models.Model(inputs=inputs_tf, outputs=outputs_tf)
+    # Set the same weights
+    model_tf.layers[1].set_weights([weights, bias])
+
+    # JAX explainer
+    explainer_jax = shap.DeepExplainer(jax_model, jnp.array(x))
+    shap_values_jax = explainer_jax.shap_values(jnp.array(test_x), check_additivity=False)
+
+    # TensorFlow explainer
+    explainer_tf = shap.DeepExplainer(model_tf, x)
+    shap_values_tf = explainer_tf.shap_values(test_x, check_additivity=False)
+
+    # The SHAP values should be similar (allowing for some numerical differences)
+    # Note: They may not be exactly the same due to different gradient implementations
+    # but should be in the same ballpark
+    shap_values_jax_flat = shap_values_jax.reshape(-1)
+    shap_values_tf_flat = shap_values_tf.reshape(-1)
+
+    # Check correlation is high (should be close to 1)
+    correlation = np.corrcoef(shap_values_jax_flat, shap_values_tf_flat)[0, 1]
+    assert correlation > 0.95, f"Correlation between JAX and TensorFlow SHAP values is too low: {correlation}"
+
+    # Check that magnitudes are similar
+    ratio = np.abs(shap_values_jax_flat).mean() / np.abs(shap_values_tf_flat).mean()
+    assert 0.5 < ratio < 2.0, f"Magnitude ratio between JAX and TF is too different: {ratio}"
+
+
+def test_jax_multi_input(random_seed):
+    """Test JAX DeepExplainer with multiple inputs."""
+    jax = pytest.importorskip("jax")
+    import jax.numpy as jnp
+
+    rs = np.random.RandomState(random_seed)
+
+    # Create a model with two inputs
+    def multi_input_model(x1, x2):
+        """Simple model that concatenates and processes two inputs."""
+        combined = jnp.concatenate([x1, x2], axis=1)
+        # Simple linear transformation
+        return jnp.sum(combined, axis=1, keepdims=True)
+
+    # Create background data
+    background1 = jnp.array(rs.randn(10, 3).astype(np.float32))
+    background2 = jnp.array(rs.randn(10, 2).astype(np.float32))
+
+    # Create test data
+    test1 = jnp.array(rs.randn(5, 3).astype(np.float32))
+    test2 = jnp.array(rs.randn(5, 2).astype(np.float32))
+
+    # Create the explainer
+    explainer = shap.DeepExplainer(multi_input_model, [background1, background2])
+
+    # Get SHAP values
+    shap_values = explainer.shap_values([test1, test2])
+
+    # Verify it's a list of two arrays (one for each input)
+    assert isinstance(shap_values, list)
+    assert len(shap_values) == 2
+    assert shap_values[0].shape == (5, 3, 1)
+    assert shap_values[1].shape == (5, 2, 1)
+
+    # Verify additivity
+    model_outputs = np.array(multi_input_model(test1, test2))
+    total_shap = shap_values[0].sum(axis=1) + shap_values[1].sum(axis=1)
+    np.testing.assert_allclose(
+        total_shap + explainer.expected_value, model_outputs.reshape(-1, 1), atol=1e-3
+    ), "Sum of SHAP values does not match difference!"
+
+
+def test_jax_ranked_outputs(random_seed):
+    """Test JAX DeepExplainer with ranked outputs."""
+    jax = pytest.importorskip("jax")
+    import jax.numpy as jnp
+
+    rs = np.random.RandomState(random_seed)
+
+    # Create a multi-output model
+    weights = jnp.array(rs.randn(3, 4).astype(np.float32))
+    bias = jnp.array(rs.randn(4).astype(np.float32))
+
+    def multi_output_model(x):
+        return jnp.dot(x, weights) + bias
+
+    # Create background and test data
+    background = jnp.array(rs.randn(10, 3).astype(np.float32))
+    test_data = jnp.array(rs.randn(5, 3).astype(np.float32))
+
+    # Create the explainer
+    explainer = shap.DeepExplainer(multi_output_model, background)
+
+    # Get SHAP values for top 2 outputs
+    # Note: additivity check disabled for ranked outputs
+    shap_values, output_ranks = explainer.shap_values(
+        test_data, ranked_outputs=2, output_rank_order="max", check_additivity=False
+    )
+
+    # Verify shapes
+    assert shap_values.shape == (5, 3, 2)  # 5 samples, 3 features, top 2 outputs
+    assert output_ranks.shape == (5, 2)  # 5 samples, top 2 output indices
+
+    # Verify that output_ranks are valid indices
+    assert np.all((output_ranks >= 0) & (output_ranks < 4))
