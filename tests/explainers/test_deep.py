@@ -1461,3 +1461,266 @@ def test_jax_embedding_lstm(random_seed):
     assert token_attributions.shape == (3, seq_length)
 
     print(f"Embedding+LSTM test passed! Token attributions shape: {token_attributions.shape}")
+
+
+def test_jax_scaled_dot_product_attention(random_seed):
+    """Test JAX DeepExplainer with scaled dot-product attention."""
+    jax = pytest.importorskip("jax")
+    import jax.numpy as jnp
+
+    rs = np.random.RandomState(random_seed)
+
+    # Attention configuration
+    seq_length = 4
+    d_model = 8
+    d_k = 8  # Key dimension
+
+    # Attention weights (for Q, K, V projections)
+    W_q = jnp.array(rs.randn(d_model, d_k).astype(np.float32) * 0.1)
+    W_k = jnp.array(rs.randn(d_model, d_k).astype(np.float32) * 0.1)
+    W_v = jnp.array(rs.randn(d_model, d_k).astype(np.float32) * 0.1)
+    W_out = jnp.array(rs.randn(d_k, 1).astype(np.float32) * 0.1)
+    b_out = jnp.array(rs.randn(1).astype(np.float32) * 0.1)
+
+    def scaled_dot_product_attention(q, k, v):
+        """Scaled dot-product attention mechanism.
+
+        q, k, v: (batch, seq_len, d_k)
+        Returns: (batch, seq_len, d_k)
+        """
+        # Compute attention scores
+        d_k = q.shape[-1]
+        scores = jnp.matmul(q, k.transpose(0, 2, 1)) / jnp.sqrt(d_k)  # (batch, seq_len, seq_len)
+
+        # Apply softmax to get attention weights
+        attention_weights = jax.nn.softmax(scores, axis=-1)  # (batch, seq_len, seq_len)
+
+        # Apply attention to values
+        output = jnp.matmul(attention_weights, v)  # (batch, seq_len, d_k)
+        return output
+
+    def attention_model(x):
+        """Self-attention model.
+
+        x: (batch, seq_len, d_model)
+        """
+        batch_size = x.shape[0]
+
+        # Project to Q, K, V
+        q = jnp.matmul(x, W_q)  # (batch, seq_len, d_k)
+        k = jnp.matmul(x, W_k)
+        v = jnp.matmul(x, W_v)
+
+        # Apply attention
+        attended = scaled_dot_product_attention(q, k, v)  # (batch, seq_len, d_k)
+
+        # Pool over sequence (simple mean pooling)
+        pooled = jnp.mean(attended, axis=1)  # (batch, d_k)
+
+        # Final output layer
+        output = jnp.dot(pooled, W_out) + b_out  # (batch, 1)
+        return output
+
+    # Create background and test data
+    background = jnp.array(rs.randn(10, seq_length, d_model).astype(np.float32) * 0.5)
+    test_data = jnp.array(rs.randn(3, seq_length, d_model).astype(np.float32) * 0.5)
+
+    # Create the explainer
+    explainer = shap.DeepExplainer(attention_model, background)
+
+    # Get SHAP values (disable additivity for nonlinear softmax)
+    shap_values = explainer.shap_values(test_data, check_additivity=False)
+
+    # Verify shape
+    assert shap_values.shape == (3, seq_length, d_model, 1)
+
+    # Verify that SHAP values are computed and non-zero
+    assert not np.allclose(shap_values, 0), "SHAP values should not all be zero for attention model"
+
+    print(f"Attention test passed! SHAP shape: {shap_values.shape}")
+
+
+def test_jax_multi_head_attention(random_seed):
+    """Test JAX DeepExplainer with multi-head attention."""
+    jax = pytest.importorskip("jax")
+    import jax.numpy as jnp
+
+    rs = np.random.RandomState(random_seed)
+
+    # Multi-head attention configuration
+    seq_length = 4
+    d_model = 12
+    num_heads = 3
+    d_k = d_model // num_heads  # 4 per head
+
+    # Weights for Q, K, V projections (one set per head)
+    heads_weights = []
+    for h in range(num_heads):
+        W_q = jnp.array(rs.randn(d_model, d_k).astype(np.float32) * 0.1)
+        W_k = jnp.array(rs.randn(d_model, d_k).astype(np.float32) * 0.1)
+        W_v = jnp.array(rs.randn(d_model, d_k).astype(np.float32) * 0.1)
+        heads_weights.append((W_q, W_k, W_v))
+
+    # Output projection
+    W_out = jnp.array(rs.randn(d_model, 1).astype(np.float32) * 0.1)
+    b_out = jnp.array(rs.randn(1).astype(np.float32) * 0.1)
+
+    def scaled_dot_product_attention(q, k, v):
+        """Scaled dot-product attention."""
+        d_k = q.shape[-1]
+        scores = jnp.matmul(q, k.transpose(0, 2, 1)) / jnp.sqrt(d_k)
+        attention_weights = jax.nn.softmax(scores, axis=-1)
+        output = jnp.matmul(attention_weights, v)
+        return output
+
+    def multi_head_attention_model(x):
+        """Multi-head self-attention model.
+
+        x: (batch, seq_len, d_model)
+        """
+        batch_size = x.shape[0]
+
+        # Compute attention for each head
+        head_outputs = []
+        for h in range(num_heads):
+            W_q, W_k, W_v = heads_weights[h]
+
+            # Project to Q, K, V for this head
+            q = jnp.matmul(x, W_q)  # (batch, seq_len, d_k)
+            k = jnp.matmul(x, W_k)
+            v = jnp.matmul(x, W_v)
+
+            # Apply attention
+            head_out = scaled_dot_product_attention(q, k, v)  # (batch, seq_len, d_k)
+            head_outputs.append(head_out)
+
+        # Concatenate heads
+        multi_head_out = jnp.concatenate(head_outputs, axis=-1)  # (batch, seq_len, d_model)
+
+        # Pool over sequence
+        pooled = jnp.mean(multi_head_out, axis=1)  # (batch, d_model)
+
+        # Final output layer
+        output = jnp.dot(pooled, W_out) + b_out  # (batch, 1)
+        return output
+
+    # Create background and test data
+    background = jnp.array(rs.randn(10, seq_length, d_model).astype(np.float32) * 0.5)
+    test_data = jnp.array(rs.randn(3, seq_length, d_model).astype(np.float32) * 0.5)
+
+    # Create the explainer
+    explainer = shap.DeepExplainer(multi_head_attention_model, background)
+
+    # Get SHAP values
+    shap_values = explainer.shap_values(test_data, check_additivity=False)
+
+    # Verify shape
+    assert shap_values.shape == (3, seq_length, d_model, 1)
+
+    # Verify that SHAP values are computed and non-zero
+    assert not np.allclose(shap_values, 0), "SHAP values should not all be zero for multi-head attention"
+
+    print(f"Multi-head attention test passed! SHAP shape: {shap_values.shape}")
+
+
+def test_jax_transformer_block(random_seed):
+    """Test JAX DeepExplainer with a complete transformer block (embedding + attention + FFN)."""
+    jax = pytest.importorskip("jax")
+    import jax.numpy as jnp
+
+    rs = np.random.RandomState(random_seed)
+
+    # Transformer configuration
+    vocab_size = 20
+    seq_length = 4
+    d_model = 12
+    d_ff = 24  # Feedforward dimension
+
+    # Embedding matrix
+    embedding_matrix = jnp.array(rs.randn(vocab_size, d_model).astype(np.float32) * 0.1)
+
+    # Attention weights
+    W_q = jnp.array(rs.randn(d_model, d_model).astype(np.float32) * 0.1)
+    W_k = jnp.array(rs.randn(d_model, d_model).astype(np.float32) * 0.1)
+    W_v = jnp.array(rs.randn(d_model, d_model).astype(np.float32) * 0.1)
+
+    # Feedforward weights
+    W_ff1 = jnp.array(rs.randn(d_model, d_ff).astype(np.float32) * 0.1)
+    b_ff1 = jnp.array(rs.randn(d_ff).astype(np.float32) * 0.1)
+    W_ff2 = jnp.array(rs.randn(d_ff, d_model).astype(np.float32) * 0.1)
+    b_ff2 = jnp.array(rs.randn(d_model).astype(np.float32) * 0.1)
+
+    # Output layer
+    W_out = jnp.array(rs.randn(d_model, 1).astype(np.float32) * 0.1)
+    b_out = jnp.array(rs.randn(1).astype(np.float32) * 0.1)
+
+    def scaled_dot_product_attention(q, k, v):
+        """Scaled dot-product attention."""
+        d_k = q.shape[-1]
+        scores = jnp.matmul(q, k.transpose(0, 2, 1)) / jnp.sqrt(d_k)
+        attention_weights = jax.nn.softmax(scores, axis=-1)
+        output = jnp.matmul(attention_weights, v)
+        return output
+
+    def transformer_model_continuous(x):
+        """Transformer model taking continuous embeddings.
+
+        x: (batch, seq_len, d_model) - continuous embeddings
+        """
+        batch_size = x.shape[0]
+
+        # Self-attention
+        q = jnp.matmul(x, W_q)
+        k = jnp.matmul(x, W_k)
+        v = jnp.matmul(x, W_v)
+        attn_out = scaled_dot_product_attention(q, k, v)  # (batch, seq_len, d_model)
+
+        # Residual connection + Layer norm (simplified - just residual for now)
+        x = x + attn_out
+
+        # Feedforward network
+        ff_out = jnp.dot(x, W_ff1) + b_ff1  # (batch, seq_len, d_ff)
+        ff_out = jax.nn.relu(ff_out)
+        ff_out = jnp.dot(ff_out, W_ff2) + b_ff2  # (batch, seq_len, d_model)
+
+        # Residual connection
+        x = x + ff_out
+
+        # Pool over sequence (mean pooling)
+        pooled = jnp.mean(x, axis=1)  # (batch, d_model)
+
+        # Final classification layer
+        output = jnp.dot(pooled, W_out) + b_out  # (batch, 1)
+        return output
+
+    # Create background and test data as continuous embeddings
+    background_indices = rs.randint(0, vocab_size, size=(10, seq_length))
+    background = embedding_matrix[background_indices]
+
+    test_indices = rs.randint(0, vocab_size, size=(3, seq_length))
+    test_data = embedding_matrix[test_indices]
+
+    # Create the explainer
+    explainer = shap.DeepExplainer(transformer_model_continuous, jnp.array(background))
+
+    # Get SHAP values with embedding dimension reduction for per-token attributions
+    shap_values = explainer.shap_values(
+        jnp.array(test_data), check_additivity=False, embedding_input_dim=2
+    )
+
+    # Verify shape - should be (batch, seq_len, 1) after reducing embedding dimension
+    assert shap_values.shape == (3, seq_length, 1)
+
+    # Verify that SHAP values are computed and non-zero
+    assert not np.allclose(shap_values, 0), "SHAP values should not all be zero for transformer"
+
+    # Verify we get per-token attributions
+    token_attributions = shap_values.squeeze(-1)  # (3, seq_length)
+    assert token_attributions.shape == (3, seq_length)
+
+    # Check that different tokens get different attributions
+    # (they should, since attention creates dependencies)
+    assert np.std(token_attributions) > 1e-6, "Token attributions should vary across positions"
+
+    print(f"Transformer test passed! Token attributions shape: {token_attributions.shape}")
+    print(f"Attribution variance: {np.std(token_attributions):.6f}")
