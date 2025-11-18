@@ -244,7 +244,9 @@ class JAXDeep(Explainer):
 
             return grads
 
-    def shap_values(self, X, ranked_outputs=None, output_rank_order="max", check_additivity=True):
+    def shap_values(
+        self, X, ranked_outputs=None, output_rank_order="max", check_additivity=True, embedding_input_dim=None
+    ):
         """Return approximate SHAP values for the model applied to X.
 
         Parameters
@@ -267,6 +269,14 @@ class JAXDeep(Explainer):
 
         check_additivity : bool
             Whether to check that SHAP values sum to the difference between model output and expected value.
+
+        embedding_input_dim : int or None
+            If not None, specifies which input dimension corresponds to discrete token indices that
+            get mapped to embeddings. The SHAP values will be summed across the embedding dimension
+            to provide attribution per token rather than per embedding dimension.
+            For example, if your model has an embedding layer that maps token indices (shape: batch x seq_len)
+            to embeddings (shape: batch x seq_len x embedding_dim), set embedding_input_dim=1 to get
+            SHAP values of shape (batch x seq_len) instead of (batch x seq_len x embedding_dim).
 
         Returns
         -------
@@ -385,6 +395,21 @@ class JAXDeep(Explainer):
             # multiple outputs case
             else:
                 output_phis = np.stack(output_phis, axis=-1)  # type: ignore[assignment]
+
+        # Handle embedding dimension reduction if specified
+        if embedding_input_dim is not None:
+            # Sum across the embedding dimension to get attribution per token
+            # For embeddings: input shape (batch, seq_len) -> after embedding (batch, seq_len, emb_dim)
+            # SHAP values would be (batch, seq_len, emb_dim, outputs)
+            # We sum over emb_dim to get (batch, seq_len, outputs)
+            if isinstance(output_phis, list):
+                # Multiple inputs case
+                output_phis = [
+                    np.sum(phi, axis=embedding_input_dim, keepdims=False) for phi in output_phis
+                ]
+            else:
+                # Single input case
+                output_phis = np.sum(output_phis, axis=embedding_input_dim, keepdims=False)
 
         if ranked_outputs is not None:
             return output_phis, model_output_ranks

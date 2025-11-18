@@ -141,7 +141,9 @@ class DeepExplainer(Explainer):
         shap_values = self.shap_values(X)
         return Explanation(values=shap_values, data=X)
 
-    def shap_values(self, X, ranked_outputs=None, output_rank_order="max", check_additivity=True):
+    def shap_values(
+        self, X, ranked_outputs=None, output_rank_order="max", check_additivity=True, embedding_input_dim=None
+    ):
         """Return approximate SHAP values for the model applied to the data given by X.
 
         Parameters
@@ -149,6 +151,7 @@ class DeepExplainer(Explainer):
         X : list,
             if framework == 'tensorflow': np.array, or pandas.DataFrame
             if framework == 'pytorch': torch.tensor
+            if framework == 'jax': jax.Array or np.array
             A tensor (or list of tensors) of samples (where X.shape[0] == # samples) on which to
             explain the model's output.
 
@@ -163,6 +166,10 @@ class DeepExplainer(Explainer):
         output_rank_order : "max", "min", or "max_abs"
             How to order the model outputs when using ranked_outputs, either by maximum, minimum, or
             maximum absolute value.
+
+        embedding_input_dim : int or None
+            (JAX only) If not None, specifies which input dimension corresponds to embeddings that should
+            be summed to provide per-token attributions. See JAXDeep.shap_values for details.
 
         Returns
         -------
@@ -185,4 +192,18 @@ class DeepExplainer(Explainer):
                 Return type for models with multiple outputs and one input changed from list to np.ndarray.
 
         """
-        return self.explainer.shap_values(X, ranked_outputs, output_rank_order, check_additivity=check_additivity)
+        # Pass embedding_input_dim only to JAX explainer
+        if hasattr(self.explainer, "__class__") and self.explainer.__class__.__name__ == "JAXDeep":
+            return self.explainer.shap_values(  # type: ignore[call-arg]
+                X, ranked_outputs, output_rank_order, check_additivity=check_additivity,
+                embedding_input_dim=embedding_input_dim
+            )
+        else:
+            # TensorFlow and PyTorch don't support embedding_input_dim
+            if embedding_input_dim is not None:
+                import warnings
+                warnings.warn(
+                    "embedding_input_dim is only supported for JAX models and will be ignored",
+                    UserWarning
+                )
+            return self.explainer.shap_values(X, ranked_outputs, output_rank_order, check_additivity=check_additivity)

@@ -1166,3 +1166,298 @@ def test_jax_lstm(random_seed):
 
     # Verify that the explainer worked
     assert explainer.expected_value is not None
+
+
+def test_jax_lstm_additivity(random_seed):
+    """Test JAX DeepExplainer LSTM with additivity check using simpler linear recurrence."""
+    jax = pytest.importorskip("jax")
+    import jax.numpy as jnp
+
+    rs = np.random.RandomState(random_seed)
+
+    # Create a simpler linear recurrent model for better additivity
+    hidden_size = 4
+    input_size = 3
+    seq_length = 3  # Shorter sequence for more stable gradients
+
+    # Use smaller weights for numerical stability
+    W_input = jnp.array(rs.randn(input_size, hidden_size).astype(np.float32) * 0.1)
+    W_hidden = jnp.array(rs.randn(hidden_size, hidden_size).astype(np.float32) * 0.1)
+    bias = jnp.array(rs.randn(hidden_size).astype(np.float32) * 0.1)
+    W_output = jnp.array(rs.randn(hidden_size, 1).astype(np.float32) * 0.1)
+    b_output = jnp.array(rs.randn(1).astype(np.float32) * 0.1)
+
+    def simple_rnn_model(x):
+        """Simple linear RNN (no nonlinearities for better additivity)."""
+        batch_size = x.shape[0]
+        h = jnp.zeros((batch_size, hidden_size))
+
+        # Process sequence with linear recurrence
+        for t in range(seq_length):
+            h = jnp.dot(x[:, t, :], W_input) + jnp.dot(h, W_hidden) + bias
+
+        # Final linear output
+        output = jnp.dot(h, W_output) + b_output
+        return output
+
+    # Create background and test data
+    background = jnp.array(rs.randn(10, seq_length, input_size).astype(np.float32) * 0.5)
+    test_data = jnp.array(rs.randn(3, seq_length, input_size).astype(np.float32) * 0.5)
+
+    # Create the explainer
+    explainer = shap.DeepExplainer(simple_rnn_model, background)
+
+    # Get SHAP values with additivity check
+    shap_values = explainer.shap_values(test_data, check_additivity=True)
+
+    # Verify shape
+    assert shap_values.shape == (3, seq_length, input_size, 1)
+
+    # Verify additivity manually
+    model_outputs = np.array(simple_rnn_model(test_data))
+    shap_sum = shap_values.sum(axis=(1, 2))
+    expected_plus_shap = explainer.expected_value + shap_sum
+
+    np.testing.assert_allclose(
+        expected_plus_shap, model_outputs, atol=1e-2, rtol=1e-2
+    ), "SHAP values should satisfy additivity for linear RNN"
+
+
+def test_jax_stacked_lstm(random_seed):
+    """Test JAX DeepExplainer with stacked LSTM layers."""
+    jax = pytest.importorskip("jax")
+    import jax.numpy as jnp
+
+    rs = np.random.RandomState(random_seed)
+
+    # Stacked LSTM configuration
+    hidden_size = 6
+    input_size = 3
+    seq_length = 4
+    num_layers = 2
+
+    # Weights for each layer
+    layers_weights = []
+    for layer in range(num_layers):
+        in_size = input_size if layer == 0 else hidden_size
+        W_input = jnp.array(rs.randn(in_size, hidden_size * 4).astype(np.float32) * 0.1)
+        W_hidden = jnp.array(rs.randn(hidden_size, hidden_size * 4).astype(np.float32) * 0.1)
+        bias = jnp.array(rs.randn(hidden_size * 4).astype(np.float32) * 0.1)
+        layers_weights.append((W_input, W_hidden, bias))
+
+    W_output = jnp.array(rs.randn(hidden_size, 1).astype(np.float32) * 0.1)
+    b_output = jnp.array(rs.randn(1).astype(np.float32) * 0.1)
+
+    def lstm_cell(h, c, x, W_input, W_hidden, bias):
+        """LSTM cell."""
+        gates = jnp.dot(x, W_input) + jnp.dot(h, W_hidden) + bias
+        i, f, g, o = jnp.split(gates, 4, axis=-1)
+
+        i = jax.nn.sigmoid(i)
+        f = jax.nn.sigmoid(f)
+        g = jnp.tanh(g)
+        o = jax.nn.sigmoid(o)
+
+        c = f * c + i * g
+        h = o * jnp.tanh(c)
+        return h, c
+
+    def stacked_lstm_model(x):
+        """Stacked LSTM model."""
+        batch_size = x.shape[0]
+
+        # Initialize states for all layers
+        h_states = [jnp.zeros((batch_size, hidden_size)) for _ in range(num_layers)]
+        c_states = [jnp.zeros((batch_size, hidden_size)) for _ in range(num_layers)]
+
+        # Process sequence
+        for t in range(seq_length):
+            layer_input = x[:, t, :]
+
+            # Pass through each LSTM layer
+            for layer in range(num_layers):
+                W_input, W_hidden, bias = layers_weights[layer]
+                h_states[layer], c_states[layer] = lstm_cell(
+                    h_states[layer], c_states[layer], layer_input, W_input, W_hidden, bias
+                )
+                layer_input = h_states[layer]  # Output of this layer is input to next
+
+        # Final output from last layer
+        output = jnp.dot(h_states[-1], W_output) + b_output
+        return output
+
+    # Create background and test data
+    background = jnp.array(rs.randn(10, seq_length, input_size).astype(np.float32) * 0.5)
+    test_data = jnp.array(rs.randn(3, seq_length, input_size).astype(np.float32) * 0.5)
+
+    # Create the explainer
+    explainer = shap.DeepExplainer(stacked_lstm_model, background)
+
+    # Get SHAP values (disable additivity for complex nonlinear stacked model)
+    shap_values = explainer.shap_values(test_data, check_additivity=False)
+
+    # Verify shape
+    assert shap_values.shape == (3, seq_length, input_size, 1)
+
+    # Verify that SHAP values are computed and non-zero
+    assert not np.allclose(shap_values, 0), "SHAP values should not all be zero for stacked LSTM"
+
+    # Verify model actually works
+    model_output = stacked_lstm_model(test_data)
+    assert model_output.shape == (3, 1)
+
+    print(f"Stacked LSTM test passed! Output shape: {model_output.shape}, SHAP shape: {shap_values.shape}")
+
+
+def test_jax_embedding_layer(random_seed):
+    """Test JAX DeepExplainer with embedding layers and dimension reduction."""
+    jax = pytest.importorskip("jax")
+    import jax.numpy as jnp
+
+    rs = np.random.RandomState(random_seed)
+
+    # Embedding configuration
+    vocab_size = 20
+    embedding_dim = 8
+    seq_length = 5
+
+    # Create embedding matrix
+    embedding_matrix = jnp.array(rs.randn(vocab_size, embedding_dim).astype(np.float32) * 0.1)
+    W_output = jnp.array(rs.randn(seq_length * embedding_dim, 1).astype(np.float32) * 0.1)
+    b_output = jnp.array(rs.randn(1).astype(np.float32) * 0.1)
+
+    def embedding_model_continuous(x):
+        """Model that takes continuous embeddings (for SHAP computation).
+
+        x has shape (batch, seq_length, embedding_dim)
+        """
+        batch_size = x.shape[0]
+        # Flatten and apply output layer
+        x_flat = x.reshape(batch_size, -1)
+        output = jnp.dot(x_flat, W_output) + b_output
+        return output
+
+    def embedding_model_discrete(indices):
+        """Model that takes discrete indices and embeds them.
+
+        indices has shape (batch, seq_length) with integer token IDs
+        """
+        # Lookup embeddings
+        embedded = embedding_matrix[indices]  # (batch, seq_length, embedding_dim)
+        return embedding_model_continuous(embedded)
+
+    # Create background data as continuous embeddings
+    background_indices = rs.randint(0, vocab_size, size=(10, seq_length))
+    background = embedding_matrix[background_indices]  # (10, seq_length, embedding_dim)
+
+    # Create test data as continuous embeddings
+    test_indices = rs.randint(0, vocab_size, size=(3, seq_length))
+    test_data = embedding_matrix[test_indices]  # (3, seq_length, embedding_dim)
+
+    # Create the explainer with continuous input (embeddings)
+    explainer = shap.DeepExplainer(embedding_model_continuous, jnp.array(background))
+
+    # Get SHAP values WITHOUT embedding dimension reduction
+    shap_values_full = explainer.shap_values(jnp.array(test_data), check_additivity=True)
+
+    # Verify shape includes embedding dimension
+    assert shap_values_full.shape == (3, seq_length, embedding_dim, 1)
+
+    # Get SHAP values WITH embedding dimension reduction (sum over embedding_dim)
+    # The embedding dimension is axis 2, so we sum over it
+    shap_values_reduced = explainer.shap_values(
+        jnp.array(test_data), check_additivity=False, embedding_input_dim=2
+    )
+
+    # Verify shape - embedding dimension should be reduced
+    assert shap_values_reduced.shape == (3, seq_length, 1)
+
+    # Verify that reduced values equal the sum of full values
+    manual_sum = shap_values_full.sum(axis=2)
+    np.testing.assert_allclose(shap_values_reduced, manual_sum, atol=1e-6)
+
+    print(f"Embedding test passed! Full shape: {shap_values_full.shape}, Reduced shape: {shap_values_reduced.shape}")
+
+
+def test_jax_embedding_lstm(random_seed):
+    """Test JAX DeepExplainer with embedding + LSTM and dimension reduction."""
+    jax = pytest.importorskip("jax")
+    import jax.numpy as jnp
+
+    rs = np.random.RandomState(random_seed)
+
+    # Configuration
+    vocab_size = 15
+    embedding_dim = 6
+    hidden_size = 8
+    seq_length = 4
+
+    # Create embedding matrix
+    embedding_matrix = jnp.array(rs.randn(vocab_size, embedding_dim).astype(np.float32) * 0.1)
+
+    # LSTM weights
+    W_input = jnp.array(rs.randn(embedding_dim, hidden_size * 4).astype(np.float32) * 0.1)
+    W_hidden = jnp.array(rs.randn(hidden_size, hidden_size * 4).astype(np.float32) * 0.1)
+    bias = jnp.array(rs.randn(hidden_size * 4).astype(np.float32) * 0.1)
+    W_output = jnp.array(rs.randn(hidden_size, 1).astype(np.float32) * 0.1)
+    b_output = jnp.array(rs.randn(1).astype(np.float32) * 0.1)
+
+    def lstm_cell(h, c, x):
+        """LSTM cell."""
+        gates = jnp.dot(x, W_input) + jnp.dot(h, W_hidden) + bias
+        i, f, g, o = jnp.split(gates, 4, axis=-1)
+
+        i = jax.nn.sigmoid(i)
+        f = jax.nn.sigmoid(f)
+        g = jnp.tanh(g)
+        o = jax.nn.sigmoid(o)
+
+        c = f * c + i * g
+        h = o * jnp.tanh(c)
+        return h, c
+
+    def embedding_lstm_model_continuous(x):
+        """LSTM model that takes continuous embeddings.
+
+        x has shape (batch, seq_length, embedding_dim)
+        """
+        batch_size = x.shape[0]
+        h = jnp.zeros((batch_size, hidden_size))
+        c = jnp.zeros((batch_size, hidden_size))
+
+        # Process sequence
+        for t in range(seq_length):
+            h, c = lstm_cell(h, c, x[:, t, :])
+
+        # Final output
+        output = jnp.dot(h, W_output) + b_output
+        return output
+
+    # Create background and test data as continuous embeddings
+    background_indices = rs.randint(0, vocab_size, size=(10, seq_length))
+    background = embedding_matrix[background_indices]
+
+    test_indices = rs.randint(0, vocab_size, size=(3, seq_length))
+    test_data = embedding_matrix[test_indices]
+
+    # Create the explainer
+    explainer = shap.DeepExplainer(embedding_lstm_model_continuous, jnp.array(background))
+
+    # Get SHAP values with embedding dimension reduction
+    # Sum over embedding_dim (axis 2) to get attribution per token
+    shap_values = explainer.shap_values(
+        jnp.array(test_data), check_additivity=False, embedding_input_dim=2
+    )
+
+    # Verify shape - should be (batch, seq_length, 1) after reducing embedding dimension
+    assert shap_values.shape == (3, seq_length, 1)
+
+    # Verify that SHAP values are computed and non-zero
+    assert not np.allclose(shap_values, 0), "SHAP values should not all be zero"
+
+    # Verify we get meaningful attributions per token (summed over embedding dimensions)
+    # Each token should have a single attribution value
+    token_attributions = shap_values.squeeze(-1)  # (3, seq_length)
+    assert token_attributions.shape == (3, seq_length)
+
+    print(f"Embedding+LSTM test passed! Token attributions shape: {token_attributions.shape}")
