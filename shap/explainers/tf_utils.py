@@ -27,11 +27,25 @@ def _get_session(session):
     _import_tf()
     # if we are not given a session find a default session
     if session is None:
+        # Try the old Keras backend methods first (TF < 2.5)
         try:
             session = tf.compat.v1.keras.backend.get_session()
-        except Exception:
-            session = tf.keras.backend.get_session()
-    return tf.get_default_session() if session is None else session
+        except (AttributeError, Exception):
+            try:
+                session = tf.keras.backend.get_session()
+            except (AttributeError, Exception):
+                pass
+
+        # If still no session, try to get the default session (TF 1.x)
+        if session is None:
+            session = tf.compat.v1.get_default_session()
+
+        # If still no session, create a new one (TF 2.5+)
+        # This is necessary because get_session() was removed in TF 2.5+
+        if session is None:
+            session = tf.compat.v1.Session()
+
+    return session
 
 
 def _get_graph(explainer):

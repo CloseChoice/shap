@@ -7,6 +7,51 @@ from .._explainer import Explainer
 from .deep_utils import _check_additivity
 
 
+def _get_embedding_with_grad_class():
+    """Factory function to create the custom embedding autograd function.
+
+    Returns the class only when torch is available.
+    """
+    import torch
+
+    class EmbeddingWithGrad(torch.autograd.Function):
+        """Custom autograd function for embedding layers that accepts float inputs.
+
+        This allows us to compute SHAP values for embedding layers by:
+        1. Accepting float indices (required for gradient computation)
+        2. Converting to integers for the actual embedding lookup
+        3. Using a custom backward pass that computes SHAP-style gradients
+        """
+
+        @staticmethod
+        def forward(ctx, indices, weight, padding_idx, max_norm, norm_type, scale_grad_by_freq, sparse):
+            """Forward pass: convert float indices to int and do embedding lookup."""
+            # Convert float indices back to long for embedding
+            indices_long = indices.long()
+            # Perform standard embedding
+            output = torch.nn.functional.embedding(
+                indices_long, weight, padding_idx, max_norm, norm_type, scale_grad_by_freq, sparse
+            )
+            # Save for backward
+            ctx.save_for_backward(indices, output)
+            return output
+
+        @staticmethod
+        def backward(ctx, grad_output):
+            """Backward pass: Return gradient for indices."""
+            # For SHAP, we need gradients wrt indices
+            # The embedding backward hook will handle the SHAP-specific computation
+            # But we need to return something that allows the gradient flow
+            indices, output = ctx.saved_tensors
+
+            # Create a gradient tensor for indices (will be refined by the hook)
+            # Return gradients for: (indices, weight, padding_idx, max_norm, norm_type, scale_grad_by_freq, sparse)
+            grad_indices = torch.zeros_like(indices)
+            return grad_indices, None, None, None, None, None, None
+
+    return EmbeddingWithGrad
+
+
 class PyTorchDeep(Explainer):
     def __init__(self, model, data):
         import torch
@@ -98,34 +143,89 @@ class PyTorchDeep(Explainer):
         import torch
 
         self.model.zero_grad()
-        X = [x.requires_grad_() for x in inputs]
-        outputs = self.model(*X)
-        selected = [val for val in outputs[:, idx]]
-        grads = []
-        if self.interim:
-            interim_inputs = self.layer.target_input
-            for idx, input in enumerate(interim_inputs):
-                grad = torch.autograd.grad(
-                    selected, input, retain_graph=True if idx + 1 < len(interim_inputs) else None, allow_unused=True
-                )[0]
-                if grad is not None:
-                    grad = grad.cpu().numpy()
+
+        # Monkey-patch embedding layers to accept float inputs
+        embedding_layers = []
+        original_forwards = []
+
+        def find_embedding_layers(module):
+            """Recursively find all embedding layers."""
+            for child in module.children():
+                if isinstance(child, torch.nn.Embedding):
+                    embedding_layers.append(child)
                 else:
-                    grad = torch.zeros_like(X[idx]).cpu().numpy()
-                grads.append(grad)
-            del self.layer.target_input
-            return grads, [i.detach().cpu().numpy() for i in interim_inputs]
-        else:
-            for idx, x in enumerate(X):
-                grad = torch.autograd.grad(
-                    selected, x, retain_graph=True if idx + 1 < len(X) else None, allow_unused=True
-                )[0]
-                if grad is not None:
-                    grad = grad.cpu().numpy()
-                else:
-                    grad = torch.zeros_like(x).cpu().numpy()
-                grads.append(grad)
-            return grads
+                    find_embedding_layers(child)
+
+        find_embedding_layers(self.model)
+
+        # Get the custom embedding function
+        if embedding_layers:
+            EmbeddingWithGrad = _get_embedding_with_grad_class()
+
+            # Save original forward methods and replace them
+            for emb_layer in embedding_layers:
+                original_forwards.append(emb_layer.forward)
+
+                # Create a new forward that uses our custom function
+                def make_custom_forward(layer):
+                    def custom_forward(input):
+                        return EmbeddingWithGrad.apply(
+                            input,
+                            layer.weight,
+                            layer.padding_idx,
+                            layer.max_norm,
+                            layer.norm_type,
+                            layer.scale_grad_by_freq,
+                            layer.sparse
+                        )
+                    return custom_forward
+
+                emb_layer.forward = make_custom_forward(emb_layer)
+
+        # Convert integer tensors to float so they can have gradients
+        X = []
+        input_dtypes = []
+        for x in inputs:
+            input_dtypes.append(x.dtype)
+            if x.dtype in [torch.int32, torch.int64, torch.long]:
+                # Convert to float and enable gradients
+                x = x.float().requires_grad_()
+            else:
+                x = x.requires_grad_()
+            X.append(x)
+
+        try:
+            outputs = self.model(*X)
+            selected = [val for val in outputs[:, idx]]
+            grads = []
+            if self.interim:
+                interim_inputs = self.layer.target_input
+                for idx, input in enumerate(interim_inputs):
+                    grad = torch.autograd.grad(
+                        selected, input, retain_graph=True if idx + 1 < len(interim_inputs) else None, allow_unused=True
+                    )[0]
+                    if grad is not None:
+                        grad = grad.cpu().numpy()
+                    else:
+                        grad = torch.zeros_like(X[idx]).cpu().numpy()
+                    grads.append(grad)
+                del self.layer.target_input
+                return grads, [i.detach().cpu().numpy() for i in interim_inputs]
+            else:
+                for idx, x in enumerate(X):
+                    grad = torch.autograd.grad(
+                        selected, x, retain_graph=True if idx + 1 < len(X) else None, allow_unused=True
+                    )[0]
+                    if grad is not None:
+                        grad = grad.cpu().numpy()
+                    else:
+                        grad = torch.zeros_like(x).cpu().numpy()
+                    grads.append(grad)
+                return grads
+        finally:
+            # Restore original forward methods for embedding layers
+            for i, emb_layer in enumerate(embedding_layers):
+                emb_layer.forward = original_forwards[i]
 
     def shap_values(self, X, ranked_outputs=None, output_rank_order="max", check_additivity=True):
         import torch
@@ -283,12 +383,21 @@ def add_interim_values(module, input, output):
                     assert input[i] == output[i], "Only the 0th input may vary!"
             # if a new method is added, it must be added here too. This ensures tensors
             # are only saved if necessary
-            if func_name in ["maxpool", "nonlinear_1d"]:
+            if func_name in ["maxpool", "nonlinear_1d", "embedding"]:
                 # only save tensors if necessary
                 if type(input) is tuple:
-                    module.x = torch.nn.Parameter(input[0].detach())
+                    input_tensor = input[0].detach()
                 else:
-                    module.x = torch.nn.Parameter(input.detach())
+                    input_tensor = input.detach()
+
+                # For embedding layers, inputs are integer indices
+                # We store them directly as they don't need to be Parameters
+                if func_name == "embedding":
+                    module.x = input_tensor  # Keep as regular tensor (integer type)
+                else:
+                    module.x = torch.nn.Parameter(input_tensor)
+
+                # Outputs are always float, so can be Parameters
                 if type(output) is tuple:
                     module.y = torch.nn.Parameter(output[0].detach())
                 else:
@@ -372,6 +481,50 @@ def nonlinear_1d(module, grad_input, grad_output):
     return tuple(grads)
 
 
+def embedding(module, grad_input, grad_output):
+    """Handler for embedding layers.
+
+    An embedding layer maps integer indices to dense vectors. For SHAP values,
+    we sum the attributions across the embedding dimensions and assign them to
+    the input indices.
+    """
+    import torch
+
+    # Split inputs (indices) and outputs (embeddings) into current and reference
+    xin = module.x[: int(module.x.shape[0] / 2)]
+    rin = module.x[int(module.x.shape[0] / 2) :]
+    xout = module.y[: int(module.y.shape[0] / 2)]
+    rout = module.y[int(module.y.shape[0] / 2) :]
+
+    # Compute differences
+    # Cast indices to float for numerical computation
+    delta_in = xin.float() - rin.float()
+    delta_out = xout - rout
+
+    # Prepare for tiling
+    dup_in = [2] + [1 for _ in delta_in.shape[1:]]
+    dup_out = [2] + [1 for _ in delta_out.shape[1:]]
+
+    # Sum gradients over embedding dimensions (all dims after the index dims)
+    # This reduces the gradient from embedding space back to index space
+    embedding_dims = list(range(len(delta_in.shape), len(grad_output[0].shape)))
+    out_sum = torch.sum(
+        grad_output[0] * delta_out.repeat(dup_out),
+        dim=embedding_dims
+    )
+
+    # Divide by input differences with numerical stability
+    delta_in_tiled = delta_in.repeat(dup_in)
+    grads = [None for _ in grad_input]
+    grads[0] = torch.where(
+        torch.abs(delta_in_tiled) < 1e-6,
+        torch.zeros_like(delta_in_tiled),
+        out_sum / delta_in_tiled
+    )
+
+    return tuple(grads)
+
+
 op_handler = {}
 
 # passthrough ops, where we make no change to the gradient
@@ -398,6 +551,7 @@ op_handler["AdaptiveAvgPool3d"] = linear_1d
 op_handler["BatchNorm1d"] = linear_1d
 op_handler["BatchNorm2d"] = linear_1d
 op_handler["BatchNorm3d"] = linear_1d
+op_handler["Embedding"] = embedding
 
 op_handler["LeakyReLU"] = nonlinear_1d
 op_handler["ReLU"] = nonlinear_1d

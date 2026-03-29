@@ -434,7 +434,8 @@ class TFDeep(Explainer):
         if not tf.executing_eagerly():
             return out
         else:
-            return [v.numpy() for v in out]
+            # Handle None values in eager mode (can occur for some gradient computations)
+            return [v.numpy() if v is not None else None for v in out]
 
 
 def tensors_blocked_by_false(ops):
