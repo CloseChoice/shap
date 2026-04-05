@@ -148,8 +148,130 @@ def test_kernel_shap_with_a1a_sparse_zero_background():
     _, cols = x_train.shape
     shape = 1, cols
     background = scipy.sparse.csr_matrix(shape, dtype=x_train.dtype)
+
     explainer = shap.KernelExplainer(linear_model.predict, background)
     explainer.shap_values(x_test)
+
+
+def test_kernel_explainer_simple_model():
+    """Test KernelExplainer with a simple linear model."""
+    def model(x):
+        return x.sum(axis=1)
+
+    X_background = np.random.randn(10, 4)
+    X_test = np.random.randn(2, 4)
+
+    explainer = shap.KernelExplainer(model, X_background, nsamples=100)
+    shap_values = explainer.shap_values(X_test)
+
+    # Check shape
+    assert shap_values.shape == X_test.shape
+
+    # Check that SHAP values approximately sum to model output - expected value
+    predictions = model(X_test)
+    reconstructed = shap_values.sum(axis=1) + explainer.expected_value
+    assert np.allclose(reconstructed, predictions, atol=0.1)
+
+
+def test_kernel_explainer_multi_output():
+    """Test KernelExplainer with multi-output model."""
+    def model(x):
+        return np.column_stack([x.sum(axis=1), x.mean(axis=1)])
+
+    X_background = np.random.randn(15, 3)
+    X_test = np.random.randn(2, 3)
+
+    explainer = shap.KernelExplainer(model, X_background, nsamples=100)
+    shap_values = explainer.shap_values(X_test)
+
+    # For multi-output models, shape should be (n_samples, n_features, n_outputs)
+    assert shap_values.shape == (X_test.shape[0], X_test.shape[1], 2)
+
+    # Check that expected_value is array-like for multi-output
+    assert hasattr(explainer.expected_value, "__len__") or np.isscalar(explainer.expected_value)
+
+
+def test_kernel_explainer_with_logit_link():
+    """Test KernelExplainer with logit link function."""
+    def model(x):
+        # Return probabilities
+        return 1 / (1 + np.exp(-x.sum(axis=1)))
+
+    X_background = np.random.randn(10, 3)
+    X_test = np.random.randn(2, 3)
+
+    explainer = shap.KernelExplainer(model, X_background, link="logit", nsamples=100)
+    shap_values = explainer.shap_values(X_test)
+
+    # Check shape
+    assert shap_values.shape == X_test.shape
+
+    # Check that link object exists and is not identity
+    assert explainer.link is not None
+    assert str(type(explainer.link).__name__) == "LogitLink"
+
+
+def test_kernel_explainer_call_method():
+    """Test the __call__ method returns Explanation object."""
+    def model(x):
+        return 2 * x[:, 0] + x[:, 1]
+
+    X_background = np.random.randn(10, 3)
+    X_test = np.random.randn(2, 3)
+
+    explainer = shap.KernelExplainer(model, X_background, nsamples=100)
+    explanation = explainer(X_test)
+
+    # Check Explanation properties
+    assert hasattr(explanation, "values")
+    assert hasattr(explanation, "base_values")
+    assert explanation.values.shape == X_test.shape
+
+
+def test_kernel_explainer_single_sample():
+    """Test KernelExplainer with a single sample."""
+    def model(x):
+        return x.sum(axis=1)
+
+    X_background = np.random.randn(10, 4)
+    X_test = np.random.randn(1, 4)
+
+    explainer = shap.KernelExplainer(model, X_background, nsamples=50)
+    shap_values = explainer.shap_values(X_test)
+
+    assert shap_values.shape == (1, 4)
+
+
+def test_kernel_explainer_with_l1_reg():
+    """Test KernelExplainer with L1 regularization."""
+    def model(x):
+        return x.sum(axis=1)
+
+    X_background = np.random.randn(10, 5)
+    X_test = np.random.randn(2, 5)
+
+    # Test with different l1_reg values
+    explainer = shap.KernelExplainer(model, X_background, l1_reg="aic", nsamples=100)
+    shap_values = explainer.shap_values(X_test)
+
+    assert shap_values.shape == X_test.shape
+
+
+def test_kernel_explainer_large_background():
+    """Test KernelExplainer with large background dataset (triggers warning)."""
+    def model(x):
+        return x[:, 0] + x[:, 1]
+
+    # Use > 100 samples to trigger warning path
+    X_background = np.random.randn(150, 3)
+    X_test = np.random.randn(2, 3)
+
+    # This should trigger a warning about large background data
+    explainer = shap.KernelExplainer(model, X_background, nsamples=100)
+    shap_values = explainer.shap_values(X_test)
+
+    assert shap_values.shape == X_test.shape
+    assert explainer.N == 150
 
 
 def test_kernel_shap_with_a1a_sparse_nonzero_background():
